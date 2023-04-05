@@ -1,0 +1,2731 @@
+PACKAGE BODY sykolrg IS
+
+   -- On-Line Registration Package
+   -- This package provides procedures that support on-line registration
+
+   PROCEDURE p_uc_olrg_process_control(term_code_in stvterm.stvterm_code%TYPE)
+   IS
+       -- If a U and G student has a spring reg group then assign the same Group code for winter
+      /*
+       CURSOR winter_c IS
+       SELECT fx.sfbrgrp_pidm pidm,
+              fx.sfbrgrp_rgrp_code rgrpCode
+        FROM sgbstdn nx, sfbrgrp fx
+       WHERE NOT EXISTS ( SELECT w.*
+                            FROM sfbrgrp w
+                           WHERE w.sfbrgrp_rgrp_code = fx.sfbrgrp_rgrp_code
+                             AND w.sfbrgrp_pidm = fx.sfbrgrp_pidm
+                             AND w.sfbrgrp_term_code = '202202' )
+        AND nx.sgbstdn_camp_code IN ('U','G')
+        AND nx.sgbstdn_stst_code = 'AS'
+        AND nx.sgbstdn_term_code_eff =  (SELECT MAX(gx.sgbstdn_term_code_eff)
+                                           FROM sgbstdn gx
+                                          WHERE gx.sgbstdn_term_code_eff <= fx.sfbrgrp_term_code
+                                            AND gx.sgbstdn_pidm = fx.sfbrgrp_pidm )
+        AND nx.sgbstdn_pidm = fx.sfbrgrp_pidm
+        AND fx.sfbrgrp_term_code = '202210';
+       */
+
+   BEGIN
+      -- Online Registration process control
+      sykmant.p_uc_maintain_sgrdisa;
+      sykolrg.p_uc_priority_reg_stud (term_code_in);
+      sykolrg.p_uc_assign_newAdmits_regGrp(term_code_in);
+      sykolrg.p_uc_ins_FRES_attr(term_code_in);
+      sykolrg.p_uc_upd_sfbetrm_max_hrs(term_code_in);
+      sykolrg.p_uc_ins_honr_overrides(term_code_in);
+      sykolrg.p_uc_insOverrides_from_waivers(term_code_in);
+      sykolrg.p_uc_upd_sfbetrm_max_hrs(term_code_in);
+      sykolrg.p_uc_ins_RNBS_attr(term_code_in);
+      sykolrg.p_uc_ins_ASDN_attr(term_code_in);
+      sykolrg.p_uc_ins_INTL_attr(term_code_in);
+      sykolrg.p_uc_upd_sfbetrm_min_hrs(term_code_in);
+      sykolrg.p_uc_populate_4yr_guarantee_table (term_code_in);
+
+      --IF term_code_in = '202110' THEN
+
+      --   FOR wdx IN winter_c
+      --   LOOP
+      --       sykolrg.p_uc_insertIntoRegGroup('202102',wdx.rgrpCode,wdx.pidm);
+      --       sykolrg.p_uc_ins_fixed_alt_pin(wdx.pidm,'202102','202102');
+      --   END LOOP;
+      --   COMMIT;
+
+      --END IF;
+
+   END;
+   -----------------------------------------------------------------------------------------------------
+   -----------------------------------------------------------------------------------------------------
+   PROCEDURE p_uc_ins_honr_overrides (term_code_in stvterm.stvterm_code%TYPE)
+   IS
+       -- This procedure identifies all honors students and inserts an
+       -- instructor approval override for any honors sections that they
+       -- have not previously taken.
+
+
+       -- Select all of the honors students
+       CURSOR honr_stud_c IS
+       SELECT ga.sgrsatt_pidm
+         FROM sgbstdn n, sgrsatt ga
+        WHERE n.sgbstdn_stst_code = 'AS'
+          AND n.sgbstdn_term_code_eff = (SELECT MAX(n2.sgbstdn_term_code_eff)
+                                           FROM sgbstdn n2
+                                          WHERE n2.sgbstdn_pidm = ga.sgrsatt_pidm
+                                            AND n2.sgbstdn_term_code_eff <= term_code_in)
+          AND n.sgbstdn_pidm = ga.sgrsatt_pidm
+          AND ga.sgrsatt_atts_code = 'HONR'
+          AND ga.sgrsatt_term_code_eff = (SELECT MAX(ga2.sgrsatt_term_code_eff)
+                                            FROM sgrsatt ga2
+                                           WHERE ga2.sgrsatt_term_code_eff <= term_code_in
+                                             AND ga2.sgrsatt_pidm = ga.sgrsatt_pidm);
+
+   BEGIN
+
+     -- Added 05/22/2017 Remove the registration override if the student no longer has the
+     -- HONR attribute.
+     DELETE FROM sfrsrpo o
+      WHERE f_uc_getstudentattribute(o.sfrsrpo_pidm,'HONR',o.sfrsrpo_term_code) IS NULL
+        AND o.sfrsrpo_user = 'DMORISE'
+        AND o.sfrsrpo_seq_numb LIKE 'H%'
+        AND o.sfrsrpo_rovr_code = 'APPROV'
+        AND o.sfrsrpo_term_code = term_code_in;
+      COMMIT;
+
+      FOR idx IN honr_stud_c
+      LOOP
+
+         -- Insert an approval override for each honors section that the student has not
+         -- previously taken
+         INSERT INTO sfrsrpo
+         ( sfrsrpo_term_code, sfrsrpo_pidm, sfrsrpo_rovr_code, sfrsrpo_subj_code, sfrsrpo_crse_numb,
+           sfrsrpo_activity_date, sfrsrpo_seq_numb, sfrsrpo_crn, sfrsrpo_user )
+         SELECT s.ssbsect_term_code, idx.sgrsatt_pidm, 'APPROV', s.ssbsect_subj_code, s.ssbsect_crse_numb,
+                TRUNC(SYSDATE), s.ssbsect_seq_numb, s.ssbsect_crn, 'DMORISE'
+           FROM ssbsect s, ssrattr sa
+          WHERE NOT EXISTS (SELECT *
+                              FROM shrgrde ge, shrtckl gl, shrtckg gr, shrtckn gn
+                             WHERE ge.shrgrde_passed_ind = 'Y'
+                               AND ge.shrgrde_code = gr.shrtckg_grde_code_final
+                               AND ge.shrgrde_levl_code = gl.shrtckl_levl_code
+                               AND gl.shrtckl_tckn_seq_no = gr.shrtckg_tckn_seq_no
+                               AND gl.shrtckl_term_code = gr.shrtckg_term_code
+                               AND gl.shrtckl_pidm = gr.shrtckg_pidm
+                               AND gr.shrtckg_tckn_seq_no = gn.shrtckn_seq_no
+                               AND gr.shrtckg_term_code = gn.shrtckn_term_code
+                               AND gr.shrtckg_pidm = gn.shrtckn_pidm
+                               AND NVL(gn.shrtckn_repeat_course_ind,'I') = 'I'
+                               AND gn.shrtckn_crse_numb = s.ssbsect_crse_numb
+                               AND gn.shrtckn_subj_code = s.ssbsect_subj_code
+                               AND gn.shrtckn_pidm = idx.sgrsatt_pidm )
+            AND NOT EXISTS (SELECT *
+                              FROM stvrsts v, sfrstcr r
+                             WHERE v.stvrsts_incl_sect_enrl = 'Y'
+                               AND v.stvrsts_code = r.sfrstcr_rsts_code
+                               AND r.sfrstcr_crn = s.ssbsect_crn
+                               AND r.sfrstcr_term_code = s.ssbsect_term_code
+                               AND r.sfrstcr_pidm = idx.sgrsatt_pidm)
+            AND NOT EXISTS (SELECT *
+                              FROM sfrsrpo o
+                             WHERE o.sfrsrpo_rovr_code = 'APPROV'
+                               AND o.sfrsrpo_crn = s.ssbsect_crn
+                               AND o.sfrsrpo_pidm = idx.sgrsatt_pidm
+                               AND o.sfrsrpo_term_code = s.ssbsect_term_code )
+            AND s.ssbsect_ssts_code = 'A'
+            AND s.ssbsect_crn = sa.ssrattr_crn
+            AND s.ssbsect_term_code = sa.ssrattr_term_code
+            AND sa.ssrattr_attr_code = 'HONR'
+            AND sa.ssrattr_term_code = term_code_in;
+
+      END LOOP;
+      COMMIT;
+
+   END;
+   -----------------------------------------------------------------------------------
+   -----------------------------------------------------------------------------------
+   PROCEDURE p_uc_ins_fixed_alt_pin (pidm_in sgbstdn.sgbstdn_pidm%TYPE,
+                                     term_code_in stvterm.stvterm_code%TYPE,
+                                     alt_pin_in sprapin.sprapin_pin%TYPE)
+   IS
+         altPin_cnt NUMBER(4);
+
+   BEGIN
+
+         -- Does any pin already exists for this student and term?
+         SELECT COUNT(*)
+           INTO altPin_cnt
+           FROM sprapin p
+          WHERE p.sprapin_process_name = 'TREG'
+            AND p.sprapin_pidm = pidm_in
+            AND p.sprapin_term_code = term_code_in;
+
+         IF altPin_cnt = 0 THEN
+
+            INSERT INTO sprapin
+            (sprapin_term_code, sprapin_pidm, sprapin_process_name, sprapin_pin,
+             sprapin_activity_date)
+            VALUES
+            (term_code_in, pidm_in, 'TREG', alt_pin_in, TRUNC(SYSDATE) );
+
+            sykolrg.p_uc_upd_gobtpac (pidm_in, term_code_in, alt_pin_in);
+
+            COMMIT;
+
+         END IF;
+   END;
+   -----------------------------------------------------------------------------------
+   -----------------------------------------------------------------------------------
+   PROCEDURE p_uc_ins_random_alt_pin (pidm_in sgbstdn.sgbstdn_pidm%TYPE,
+                                      term_code_in stvterm.stvterm_code%TYPE )
+
+   IS
+         studAltPin_cnt NUMBER(4);
+         altPin_cnt     NUMBER(4);
+         newAltPin      sprapin.sprapin_pin%TYPE;
+
+   BEGIN
+
+        -- Does an alt pin already exists for this student and term?
+         SELECT COUNT(*)
+           INTO studAltPin_cnt
+           FROM sprapin p
+          WHERE p.sprapin_process_name = 'TREG'
+            AND p.sprapin_pidm = pidm_in
+            AND p.sprapin_term_code = term_code_in;
+
+          -- If the student does not already have an alternate pin continue on
+          IF studAltPin_cnt = 0 THEN
+
+            -- Now we need to generate a random alt pin and make sure it is not
+            -- assigned to any other student
+
+            altPin_cnt := 1;
+            WHILE altPin_cnt != 0
+            LOOP
+
+                 newAltPin := RPAD(REPLACE(TO_CHAR(POWER(10,6) * dbms_random.value (0,0.999999999)),'.','8'),6,'1');
+
+               SELECT COUNT(*)
+                 INTO altPin_cnt
+                 FROM sprapin p
+                WHERE p.sprapin_process_name = 'TREG'
+                  AND p.sprapin_pin = newAltPin
+                  AND p.sprapin_term_code = term_code_in;
+
+            END LOOP;
+
+            INSERT INTO sprapin
+            (sprapin_term_code, sprapin_pidm, sprapin_process_name, sprapin_pin,
+             sprapin_activity_date)
+            VALUES
+            (term_code_in, pidm_in, 'TREG', newAltPin, TRUNC(SYSDATE) );
+
+            sykolrg.p_uc_upd_gobtpac (pidm_in, term_code_in, newAltPin);
+
+            COMMIT;
+
+         END IF;
+   END;
+   -----------------------------------------------------------------------------------
+   -----------------------------------------------------------------------------------
+   PROCEDURE p_uc_upd_gobtpac (pidm_in sgbstdn.sgbstdn_pidm%TYPE,
+                               term_code_in stvterm.stvterm_code%TYPE,
+                               alt_pin_in sprapin.sprapin_pin%TYPE)
+   IS
+
+       -- This procedure updates gobtpac pin with the alternate pin.
+       -- The gobtpac pin is required when a faculty member registers the student
+       -- on-line. To avoid confusion, we set the gobtapc pin the same as the alternate pin.
+       term_end_date stvterm.stvterm_end_date%TYPE;
+
+       CURSOR term_c IS
+       SELECT m.stvterm_end_date
+         FROM stvterm m
+        WHERE m.stvterm_code = term_code_in;
+
+
+       CURSOR gobtpac_c IS
+       SELECT NVL(c.gobtpac_pin,'*') pin,
+              c.gobtpac_pin_disabled_ind,
+              c.gobtpac_usage_accept_ind,
+              c.gobtpac_pin_exp_date
+         FROM gobtpac c
+        WHERE c.gobtpac_pidm = pidm_in;
+
+       gobtpac_rec gobtpac_c%ROWTYPE;
+
+   BEGIN
+
+       -- Get the end date of the term that this pin is going to be used
+       OPEN term_c;
+         FETCH term_c INTO term_end_date;
+       CLOSE term_c;
+
+       IF term_end_date IS NOT NULL THEN
+
+          OPEN gobtpac_c;
+          FETCH gobtpac_c INTO gobtpac_rec;
+
+                IF gobtpac_rec.gobtpac_pin_disabled_ind = 'Y' OR
+                   gobtpac_rec.gobtpac_usage_accept_ind = 'N' OR
+                   gobtpac_rec.gobtpac_pin_exp_date IS NULL OR
+                   gobtpac_rec.gobtpac_pin_exp_date < term_end_date THEN
+
+                   UPDATE gobtpac c
+                      SET c.gobtpac_pin_exp_date = GREATEST(term_end_date,
+                                                            NVL(gobtpac_rec.gobtpac_pin_exp_date,term_end_date)),
+                          c.gobtpac_usage_accept_ind = 'Y',
+                          c.gobtpac_pin_disabled_ind = 'N',
+                          c.gobtpac_activity_date = SYSDATE,
+                          c.gobtpac_user = 'BANINST1'
+                    WHERE c.gobtpac_pidm = pidm_in;
+
+                   COMMIT;
+                END IF;
+
+          CLOSE gobtpac_c;
+      END IF;
+    END;
+   -----------------------------------------------------------------------------------
+   -----------------------------------------------------------------------------------
+    PROCEDURE p_uc_assign_newAdmits_regGrp (reg_term_code_in stvterm.stvterm_code%TYPE)
+    IS
+         summer_admit_term stvterm.stvterm_code%TYPE;
+         last_reg_term     stvterm.stvterm_code%TYPE;
+         regGroup          sfbrgrp.sfbrgrp_rgrp_code%TYPE;
+
+         --OR (  g.sgbstdn_camp_code = 'U' AND
+         --            g.sgbstdn_styp_code = '1' AND
+         --            NOT EXISTS (SELECT *
+         --                          FROM syrhide h
+         --                         WHERE h.syrhide_registration_term = reg_term_code_in) )
+
+         -- Alive, Active, Matriculated, Deposit Paid, New Freshman, New Transfers, New Graduates
+         CURSOR new_admits_c IS
+         SELECT ap.saradap_pidm pidm,
+                ap.saradap_camp_code camp_code,
+                ap.saradap_styp_code styp_code,
+                ap.saradap_program_1 program_1
+           FROM sgbstdn g, spbpers bu, stvapdc va, sarappd pp, saradap ap
+          WHERE NOT (g.sgbstdn_camp_code = 'U' AND g.sgbstdn_styp_code = '1')
+            AND g.sgbstdn_program_1 NOT LIKE 'NON-MAT%'
+            AND g.sgbstdn_stst_code = 'AS'
+            AND g.sgbstdn_term_code_eff = (SELECT MAX(g2.sgbstdn_term_code_eff)
+                                             FROM sgbstdn g2
+                                            WHERE g2.sgbstdn_pidm = bu.spbpers_pidm
+                                              AND g2.sgbstdn_term_code_eff <= reg_term_code_in)
+            AND g.sgbstdn_pidm = bu.spbpers_pidm
+            AND bu.spbpers_dead_date IS NULL
+            AND NVL(bu.spbpers_dead_ind,'N') = 'N'
+            AND bu.spbpers_pidm = pp.sarappd_pidm
+            AND NOT EXISTS (SELECT *
+                              FROM sfbrgrp rg
+                             WHERE rg.sfbrgrp_pidm = ap.saradap_pidm
+                               AND rg.sfbrgrp_term_code = reg_term_code_in)
+            AND va.stvapdc_stdn_acc_ind = 'Y'
+            AND va.stvapdc_code = pp.sarappd_apdc_code
+            AND pp.sarappd_seq_no = (SELECT MAX(pp2.sarappd_seq_no)
+                                       FROM sarappd pp2
+                                      WHERE pp2.sarappd_appl_no = pp.sarappd_appl_no
+                                        AND pp2.sarappd_term_code_entry = pp.sarappd_term_code_entry
+                                        AND pp2.sarappd_pidm = pp.sarappd_pidm)
+            AND pp.sarappd_appl_no = ap.saradap_appl_no
+            AND pp.sarappd_term_code_entry = ap.saradap_term_code_entry
+            AND pp.sarappd_pidm = ap.saradap_pidm
+            AND ap.saradap_levl_code IN ( 'UG','GR' )
+            AND ap.saradap_appl_no = (SELECT MAX(ap2.saradap_appl_no)
+                                        FROM saradap ap2
+                                       WHERE ap2.saradap_pidm = ap.saradap_pidm)
+            AND ap.saradap_term_code_entry IN ( reg_term_code_in, summer_admit_term);
+
+         -- Continuing matriculated students that were registered last term
+         CURSOR continuing_c IS
+         SELECT x.sgbstdn_pidm pidm,
+                x.sgbstdn_camp_code camp_code,
+                x.sgbstdn_styp_code styp_code,
+                x.sgbstdn_program_1 program_1,
+                f_class_calc_fnc(x.sgbstdn_pidm,x.sgbstdn_levl_code, reg_term_code_in) stuClass
+           FROM sgbstdn x
+          WHERE ( (EXISTS (SELECT r.*
+                             FROM sfrstcr r
+                            WHERE r.sfrstcr_term_code IN ( last_reg_term, summer_admit_term )
+                              AND r.sfrstcr_pidm = x.sgbstdn_pidm ) )
+                  OR
+                  ( EXISTS (SELECT *
+                              FROM sgbstdn m
+                             WHERE m.sgbstdn_leav_from_date IS NOT NULL
+                               AND m.sgbstdn_term_code_eff IN ( last_reg_term, summer_admit_term )
+                               AND m.sgbstdn_pidm = x.sgbstdn_pidm ) )
+                )
+            AND NOT EXISTS (SELECT *
+                              FROM sfbrgrp bx
+                             WHERE bx.sfbrgrp_pidm = x.sgbstdn_pidm
+                               AND bx.sfbrgrp_term_code = reg_term_code_in)
+            AND ( x.sgbstdn_program_1 NOT LIKE 'NON-MAT%'
+                  OR
+                 (x.sgbstdn_program_1 LIKE 'NON-MAT%'AND
+                  SUBSTR(reg_term_code_in,5,2) IN ('80','10') AND
+                  EXISTS (SELECT v.gorvisa_pidm
+                            FROM gorvisa v
+                           WHERE v.gorvisa_seq_no = (SELECT MAX(v2.gorvisa_seq_no)
+                                                       FROM gorvisa v2
+                                                      WHERE v2.gorvisa_pidm = v.gorvisa_pidm)
+                             AND v.gorvisa_pidm = x.sgbstdn_pidm )
+                 ) )
+            AND x.sgbstdn_levl_code IN ('UG','GR')
+            AND x.sgbstdn_stst_code = 'AS'
+            AND NOT (x.sgbstdn_styp_code = '1' AND x.sgbstdn_camp_code = 'U' )
+            AND x.sgbstdn_term_code_eff = (SELECT MAX(x2.sgbstdn_term_code_eff)
+                                             FROM sgbstdn x2
+                                            WHERE x2.sgbstdn_pidm = x.sgbstdn_pidm
+                                              AND x2.sgbstdn_term_code_eff <= reg_term_code_in);
+
+         -- Readmits
+         -- Students who were on leave last term and should be coming back for the
+         -- registration term
+         CURSOR readmits_c IS
+         SELECT x.sgbstdn_pidm pidm,
+                x.sgbstdn_camp_code camp_code,
+                x.sgbstdn_styp_code styp_code,
+                x.sgbstdn_program_1 program_1,
+                f_class_calc_fnc(x.sgbstdn_pidm,x.sgbstdn_levl_code, reg_term_code_in) stuClass
+           FROM sgbstdn x
+          WHERE x.sgbstdn_levl_code IN ('UG','GR')
+            AND x.sgbstdn_stst_code = 'AS'
+            AND x.sgbstdn_styp_code = 'R'
+            AND x.sgbstdn_term_code_eff IN ( reg_term_code_in, summer_admit_term)
+            AND NOT EXISTS (SELECT *
+                              FROM sfbrgrp bx
+                             WHERE bx.sfbrgrp_pidm = x.sgbstdn_pidm
+                               AND bx.sfbrgrp_term_code = reg_term_code_in)
+            AND x.sgbstdn_term_code_eff = (SELECT MAX(x2.sgbstdn_term_code_eff)
+                                             FROM sgbstdn x2
+                                            WHERE x2.sgbstdn_pidm = x.sgbstdn_pidm
+                                              AND x2.sgbstdn_term_code_eff <= reg_term_code_in)
+          UNION
+         SELECT n2.sgbstdn_pidm pidm,
+                n2.sgbstdn_camp_code camp_code,
+                n2.sgbstdn_styp_code styp_code,
+                n2.sgbstdn_program_1 program_1,
+                f_class_calc_fnc(n2.sgbstdn_pidm,n2.sgbstdn_levl_code, reg_term_code_in) stuClass
+           FROM sgbstdn g, sgbstdn n2
+          WHERE NOT EXISTS (SELECT *
+                              FROM sfbrgrp z
+                             WHERE z.sfbrgrp_pidm = n2.sgbstdn_pidm
+                               AND z.sfbrgrp_term_code = reg_term_code_in)
+            AND g.sgbstdn_stst_code = 'IS'
+            AND g.sgbstdn_leav_from_date IS NOT NULL
+            AND g.sgbstdn_term_code_eff = (SELECT MAX (g2.sgbstdn_term_code_eff)
+                                             FROM sgbstdn g2
+                                            WHERE g2.sgbstdn_term_code_eff IN (summer_admit_term, last_reg_term)
+                                              AND g2.sgbstdn_pidm = g.sgbstdn_pidm )
+            AND g.sgbstdn_pidm = n2.sgbstdn_pidm
+            AND n2.sgbstdn_levl_code IN ('UG','GR')
+            AND n2.sgbstdn_program_1 NOT LIKE 'NON-MAT%'
+            AND n2.sgbstdn_leav_from_date IS NULL
+            AND n2.sgbstdn_stst_code = 'AS'
+            AND n2.sgbstdn_term_code_eff = reg_term_code_in;
+
+         -- Identify distance students that are not in the distance registration
+         -- groups and move them to the distance group
+         CURSOR D_DG_change_grp IS
+         SELECT nx.sgbstdn_pidm pidm,
+                nx.sgbstdn_camp_code camp_code,
+                nx.sgbstdn_styp_code styp_code,
+                nx.sgbstdn_program_1 program_1,
+                fx.sfbrgrp_rgrp_code
+           FROM sfbwctl b, sfbrgrp fx, sgbstdn nx
+          WHERE b.sfbwctl_rgrp_code = fx.sfbrgrp_rgrp_code
+            AND b.sfbwctl_term_code = fx.sfbrgrp_term_code
+            AND fx.sfbrgrp_rgrp_code NOT IN (  'CAMPUS_'||nx.sgbstdn_camp_code,'ASDNCLOSED')
+            AND fx.sfbrgrp_term_code = reg_term_code_in
+            AND fx.sfbrgrp_pidm = nx.sgbstdn_pidm
+            AND nx.sgbstdn_program_1 NOT IN ('BS-NUR-ASDN','BSN-NUR-HY','BS-HSC-HY')
+            AND nx.sgbstdn_camp_code IN ('D','DG','FSR','CP','P','PG','M')
+            AND nx.sgbstdn_stst_code = 'AS'
+            AND nx.sgbstdn_term_code_eff =  (SELECT MAX(gx.sgbstdn_term_code_eff)
+                                               FROM sgbstdn gx
+                                              WHERE gx.sgbstdn_term_code_eff <= reg_term_code_in
+                                                AND gx.sgbstdn_pidm = nx.sgbstdn_pidm );
+
+
+         CURSOR nonMat_SEVIS_c IS
+         SELECT i.spriden_id,
+                i.spriden_last_name,
+                i.spriden_first_name,
+                n4.sgbstdn_pidm pidm,
+                f_uc_getAdvisorId(i.spriden_pidm,reg_term_code_in) AdvisorId
+          FROM spriden i, spbpers p4, sgbstdn n4, gobsevs v4
+         WHERE i.spriden_change_ind IS NULL
+           AND i.spriden_pidm = p4.spbpers_pidm
+           AND EXISTS (SELECT y4.syracct_pidm
+                         FROM syracct y4
+                        WHERE y4.syracct_status_code IN ('A','I','K')
+                          AND y4.syracct_pidm = p4.spbpers_pidm )
+          AND NOT EXISTS (SELECT *
+                              FROM sfbrgrp z
+                             WHERE z.sfbrgrp_pidm = n4.sgbstdn_pidm
+                               AND z.sfbrgrp_term_code = reg_term_code_in)
+          AND p4.spbpers_dead_date IS NULL
+          AND NVL(p4.spbpers_dead_ind,'N') = 'N'
+          AND p4.spbpers_pidm = n4.sgbstdn_pidm
+          AND n4.sgbstdn_program_1 LIKE 'NON-MAT-UG'
+          AND n4.sgbstdn_stst_code = 'AS'
+          AND n4.sgbstdn_term_code_eff = (SELECT MAX(g4.sgbstdn_term_code_eff)
+                                            FROM sgbstdn g4
+                                           WHERE g4.sgbstdn_term_code_eff <= reg_term_code_in
+                                             AND g4.sgbstdn_pidm = n4.sgbstdn_pidm)
+          AND n4.sgbstdn_pidm = v4.gobsevs_pidm
+          AND v4.gobsevs_sevis_id IS NOT NULL;
+
+         -- 4/17/2015 New Graduate OT/PT students that were here as undergrads are to be assigned the
+         -- time ticket as a continuing student
+         CURSOR GR_OTPT_change_grp IS
+         SELECT ap.saradap_pidm pidm,
+                g.sgbstdn_camp_code camp_code,
+                g.sgbstdn_styp_code styp_code,
+                g.sgbstdn_program_1 program_1
+           FROM sgbstdn g, spbpers bu, stvapdc va, sarappd pp, saradap ap
+          WHERE g.sgbstdn_program_1 NOT LIKE 'NON-MAT%'
+            AND g.sgbstdn_stst_code = 'AS'
+            AND g.sgbstdn_term_code_eff = (SELECT MAX(g2.sgbstdn_term_code_eff)
+                                             FROM sgbstdn g2
+                                            WHERE g2.sgbstdn_pidm = bu.spbpers_pidm
+                                              AND g2.sgbstdn_term_code_eff <= reg_term_code_in)
+            AND g.sgbstdn_pidm = bu.spbpers_pidm
+            AND bu.spbpers_dead_date IS NULL
+            AND NVL(bu.spbpers_dead_ind,'N') = 'N'
+            AND bu.spbpers_pidm = pp.sarappd_pidm
+            AND EXISTS (SELECT *
+                          FROM sgbstdn n, sfrstcr r
+                         WHERE n.sgbstdn_majr_code_1 IN ('HS' ,'HSPT','HSP4','HS4P','PT','HSCP',
+                                                         'HSC','HSOT','HSO4','HS4O','OT','HSCO','HSOW','HSWO')
+                           AND n.sgbstdn_levl_code = 'UG'
+                           AND n.sgbstdn_term_code_eff = (SELECT MAX(n2.sgbstdn_term_code_eff)
+                                                           FROM sgbstdn n2
+                                                           WHERE n2.sgbstdn_term_code_eff <= r.sfrstcr_term_code
+                                                             AND n2.sgbstdn_pidm = r.sfrstcr_pidm )
+                           AND n.sgbstdn_pidm = r.sfrstcr_pidm
+                           AND r.sfrstcr_rsts_code IN ('RE','RW' )
+                           AND r.sfrstcr_pidm = ap.saradap_pidm
+                           AND r.sfrstcr_term_code = last_reg_term  )
+            AND EXISTS (SELECT *
+                              FROM sfrwctl tg, sfbwctl bg, sfbrgrp rg
+                             WHERE TO_DATE(tg.sfrwctl_begin_date||' '||tg.sfrwctl_hour_begin,'DD-MON-YYYY HH24:MI')  >
+                                              ( SELECT TO_DATE(t2.sfrwctl_begin_date||' '||t2.sfrwctl_hour_begin,'DD-MON-YYYY HH24:MI')
+                                                  FROM sfrwctl t2, sfbwctl b2
+                                                 WHERE t2.sfrwctl_priority = b2.sfbwctl_priority
+                                                   AND t2.sfrwctl_term_code = b2.sfbwctl_term_code
+                                                   AND b2.sfbwctl_rgrp_code = 'CAMPUS_G'
+                                                   AND b2.sfbwctl_term_code = reg_term_code_in)
+                               AND tg.sfrwctl_priority = bg.sfbwctl_priority
+                               AND tg.sfrwctl_term_code = bg.sfbwctl_term_code
+                               AND bg.sfbwctl_rgrp_code = rg.sfbrgrp_rgrp_code
+                               AND bg.sfbwctl_term_code = rg.sfbrgrp_term_code
+                               AND rg.sfbrgrp_pidm = ap.saradap_pidm
+                               AND rg.sfbrgrp_term_code = reg_term_code_in )
+            AND va.stvapdc_stdn_acc_ind = 'Y'
+            AND va.stvapdc_code = pp.sarappd_apdc_code
+            AND pp.sarappd_seq_no = (SELECT MAX(pp2.sarappd_seq_no)
+                                       FROM sarappd pp2
+                                      WHERE pp2.sarappd_appl_no = pp.sarappd_appl_no
+                                        AND pp2.sarappd_term_code_entry = pp.sarappd_term_code_entry
+                                        AND pp2.sarappd_pidm = pp.sarappd_pidm)
+            AND pp.sarappd_appl_no = ap.saradap_appl_no
+            AND pp.sarappd_term_code_entry = ap.saradap_term_code_entry
+            AND pp.sarappd_pidm = ap.saradap_pidm
+            AND ap.saradap_majr_code_1 IN ('PT','PT3','OT','OT2','OCW')
+            AND ap.saradap_camp_code = 'G'
+            AND ap.saradap_levl_code ='GR'
+            AND ap.saradap_appl_no = (SELECT MAX(ap2.saradap_appl_no)
+                                        FROM saradap ap2
+                                       WHERE ap2.saradap_pidm = ap.saradap_pidm)
+            AND ap.saradap_term_code_entry IN ( reg_term_code_in, summer_admit_term);
+
+
+
+   BEGIN
+
+         IF reg_term_code_in LIKE '%80'  THEN
+           -- If processing for Fall registration, we also want to look at the new admits for
+           -- that summer.
+           summer_admit_term := SUBSTR(reg_term_code_in, 1,4)||'50';
+         ELSE
+           summer_admit_term := 'x';
+         END IF;
+
+         SELECT MAX(m.stvterm_code)
+           INTO last_reg_term
+           FROM stvterm m
+          WHERE SUBSTR(m.stvterm_code,5,2) IN ('80','10')
+            AND m.stvterm_code < reg_term_code_in;
+
+
+         FOR idx IN new_admits_c
+         LOOP
+
+            -- 10/14/2019 Starting 202010 Shannon and Jenna do not want BS-NUR-ASDN students to be able to register themselves
+            -- 07/06/2022 Eva Cabrera will register BSN-NUR-HY and BS-HSC-HY
+            IF idx.program_1 NOT IN ( 'BS-NUR-ASDN','NON-MAT-ABSN','NON-MAT-ABOR','NON-MAT-ABPR','BSN-NUR-HY','BS-HSC-HY') THEN
+
+               IF idx.styp_code IN ( '1','2') AND idx.camp_code IN ('U','E') THEN
+
+                  regGroup := 'CAMP_U_NEW';
+
+                  -- Add the student to the reg group and set up random pin
+                  -- 5/17/16 Changed pin to random per Rich Raccioppa
+                  -- 8/24/16 Students registered for 201680 so now they will be assigned generic pin
+                  sykolrg.p_uc_insertIntoRegGroup (reg_term_code_in, regGroup, idx.pidm);
+
+                  IF idx.styp_code = '2' OR SUBSTR(reg_term_code_in,5,2) = '50' THEN
+                     --IN ('202080','202110','202102','202150','202180') THEN
+                     -- 06/24/2020 Changed transfers to generic per Bethany
+                     sykolrg.p_uc_ins_fixed_alt_pin (idx.pidm, reg_term_code_in, reg_term_code_in);
+
+                  ELSE
+
+                     sykolrg.p_uc_ins_random_alt_pin (idx.pidm, reg_term_code_in);
+
+                  END IF;
+
+               ELSIF idx.styp_code = '3' AND idx.camp_code IN ( 'G','E') THEN
+
+                  regGroup := 'CAMP_G_NEW';
+
+                  -- Add the student to the reg group and set up GENERIC pin which is
+                  -- the same as the registration code
+                  sykolrg.p_uc_insertIntoRegGroup (reg_term_code_in, regGroup, idx.pidm);
+                  sykolrg.p_uc_ins_fixed_alt_pin (idx.pidm, reg_term_code_in, reg_term_code_in);
+
+
+               ELSIF idx.camp_code IN ('D','DG','FSR','CP','M','P','PG') THEN
+
+                  regGroup := 'CAMPUS_'||idx.camp_code;
+
+                  -- Add the student to the reg group and set up GENERIC pin which is
+                  -- the same as the registration code
+                  sykolrg.p_uc_insertIntoRegGroup (reg_term_code_in, regGroup, idx.pidm);
+                  sykolrg.p_uc_ins_fixed_alt_pin (idx.pidm, reg_term_code_in, reg_term_code_in);
+               ELSE
+
+                  regGroup := 'CAMP_U_NEW';
+                  -- Add the student to the reg group and set up random pin
+                  -- 5/17/16 Changed pin to random per Rich Raccioppa
+                  sykolrg.p_uc_insertIntoRegGroup (reg_term_code_in, regGroup, idx.pidm);
+
+                  IF SUBSTR(reg_term_code_in,5,2) = '50' THEN
+                    -- IN ('202050','202080','202110','202102','202150','202180') THEN
+                     sykolrg.p_uc_ins_fixed_alt_pin (idx.pidm, reg_term_code_in, reg_term_code_in);
+                  ELSE
+                    sykolrg.p_uc_ins_random_alt_pin( idx.pidm, reg_term_code_in);
+                  END IF;
+
+               END IF;
+            END IF;
+         END LOOP;
+         COMMIT;
+
+         FOR idx2 IN continuing_c
+         LOOP
+            IF idx2.program_1 NOT IN ( 'BS-NUR-ASDN','NON-MAT-ABSN','NON-MAT-ABOR','NON-MAT-ABPR','BSN-NUR-HY','BS-HSC-HY')
+             THEN
+
+               regGroup := NULL;
+               regGroup := sykolrg.f_uc_assign_reg_group(idx2.pidm, reg_term_code_in);
+
+               IF regGroup IS NOT NULL THEN
+
+                  sykolrg.p_uc_insertIntoRegGroup (reg_term_code_in, regGroup, idx2.pidm);
+
+                  IF idx2.camp_code IN ('U','G','E') THEN
+
+
+                    IF SUBSTR(reg_term_code_in,5,2) = '50' THEN
+                       sykolrg.p_uc_ins_fixed_alt_pin (idx2.pidm, reg_term_code_in, reg_term_code_in);
+                    ELSIF SUBSTR(reg_term_code_in,5,2) IN ('10','80') THEN
+                       sykolrg.p_uc_ins_random_alt_pin (idx2.pidm, reg_term_code_in);
+                    ELSE
+                       sykolrg.p_uc_ins_fixed_alt_pin (idx2.pidm, reg_term_code_in, reg_term_code_in);
+                    END IF;
+
+                  ELSIF idx2.camp_code IN ('D','DG','FSR','CP','P','M','PG') THEN
+
+                       sykolrg.p_uc_ins_fixed_alt_pin (idx2.pidm, reg_term_code_in, reg_term_code_in);
+
+                  END IF;
+               END IF;
+            END IF;
+         END LOOP;
+         COMMIT;
+
+         FOR idx3 IN readmits_c
+         LOOP
+            IF idx3.program_1 NOT IN ( 'BS-NUR-ASDN','NON-MAT-ABSN','NON-MAT-ABOR','NON-MAT-ABPR','BSN-NUR-HY','BS-HSC-HY')  THEN
+
+               regGroup := NULL;
+               regGroup := sykolrg.f_uc_assign_reg_group(idx3.pidm, reg_term_code_in);
+
+               IF regGroup IS NOT NULL THEN
+
+                  sykolrg.p_uc_insertIntoRegGroup (reg_term_code_in, regGroup, idx3.pidm);
+                  sykolrg.p_uc_ins_fixed_alt_pin (idx3.pidm, reg_term_code_in, reg_term_code_in);
+
+               END IF;
+            END IF;
+         END LOOP;
+         COMMIT;
+
+         -- Distance Students have longer to register on-line.  Occasionally they wind up in the wrong group
+         -- due to earlier activity.  Change their registration group as needed
+         FOR idx4 IN D_DG_change_grp
+         LOOP
+
+            IF idx4.program_1 NOT IN ( 'BS-NUR-ASDN','NON-MAT-ABSN','NON-MAT-ABOR','NON-MAT-ABPR','BSN-NUR-HY','BS-HSC-HY') THEN
+               IF idx4.pidm != 205712 THEN
+                  sykolrg.p_uc_insertIntoRegGroup (reg_term_code_in, 'CAMPUS_'||idx4.camp_code, idx4.pidm);
+                  sykolrg.p_uc_ins_fixed_alt_pin (idx4.pidm, reg_term_code_in, reg_term_code_in);
+               END IF;
+            END IF;
+         END LOOP;
+         COMMIT;
+
+
+         FOR idx5 IN nonMat_SEVIS_c
+         LOOP
+
+             sykolrg.p_uc_insertIntoRegGroup (reg_term_code_in, 'NM_SEVIS', idx5.pidm);
+             sykolrg.p_uc_ins_fixed_alt_pin (idx5.pidm, reg_term_code_in, reg_term_code_in);
+
+         END LOOP;
+         COMMIT;
+
+         -- New Graduate OT/PT students that were here as undergrads are to be assigned the
+         -- time ticket as a continuing student
+         FOR idx6 IN GR_OTPT_change_grp
+         LOOP
+
+            sykolrg.p_uc_insertIntoRegGroup (reg_term_code_in, 'CAMPUS_G', idx6.pidm);
+
+         END LOOP;
+         COMMIT;
+
+         sykolrg.p_uc_upd_sfbetrm_max_hrs(reg_term_code_in);
+         sykolrg.p_uc_asdn_override(reg_term_code_in);
+   END;
+   -----------------------------------------------------------------------------------
+   -----------------------------------------------------------------------------------
+     PROCEDURE p_uc_upd_sfbetrm_max_hrs(reg_term_code_in stvterm.stvterm_code%TYPE)
+     IS
+
+        summer_admit_term stvterm.stvterm_code%TYPE;
+        sfbetrmCnt        NUMBER(4);
+        summerRegCnt      NUMBER(4);
+        currCumGPA        shrlgpa.shrlgpa_gpa%TYPE;
+        newMaxHrs         sfbetrm.sfbetrm_mhrs_over%TYPE;
+
+
+        -- 11/10/2020 Changed logic - All students should now have max reg hours = 19
+
+        CURSOR studLimits_c IS
+        SELECT sg.sgbstdn_pidm pidm,
+               sg.sgbstdn_levl_code levl_code,
+               sg.sgbstdn_program_1 program_1,
+               se.sfbetrm_term_code term_code,
+               se.sfbetrm_mhrs_over,
+               DECODE(SUBSTR(se.sfbetrm_term_code,5,2),'02',3,19) maxRegHrs,
+               f_uc_getinprogresscredithrs(se.sfbetrm_pidm,se.sfbetrm_term_code) currentRegHrs
+          FROM sgbstdn sg, sfbetrm se
+         WHERE ( ( SUBSTR(se.sfbetrm_term_code,5,2) IN ('50','80','10') AND
+                 se.sfbetrm_mhrs_over < 19 )
+                 OR
+                 ( SUBSTR(se.sfbetrm_term_code,5,2) = '02' AND
+                 se.sfbetrm_mhrs_over > 3 )
+                )
+           AND sg.sgbstdn_levl_code IN ('UG','GR')
+           AND sg.sgbstdn_program_1 NOT IN ('MS-FNP','MS-FNP-HY','CERT-FNP')
+           AND sg.sgbstdn_term_code_eff = (SELECT MAX(b3.sgbstdn_term_code_eff)
+                                            FROM sgbstdn b3
+                                           WHERE b3.sgbstdn_pidm = se.sfbetrm_pidm
+                                             AND b3.sgbstdn_term_code_eff <= se.sfbetrm_term_code)
+           AND sg.sgbstdn_pidm = se.sfbetrm_pidm
+           AND se.sfbetrm_term_code = reg_term_code_in;
+
+     BEGIN
+
+        IF reg_term_code_in LIKE '%80'  THEN
+          -- If processing for Fall registration, we also want to look at the new admits for
+          -- that summer.
+          summer_admit_term := SUBSTR(reg_term_code_in, 1,4)||'50';
+
+        ELSE
+          summer_admit_term := 'x';
+        END IF;
+
+        UPDATE sfbetrm m
+           SET m.sfbetrm_mhrs_over = 19
+         WHERE m.sfbetrm_term_code = reg_term_code_in
+           AND m.sfbetrm_mhrs_over > 30;
+        COMMIT;
+
+        FOR idx IN studLimits_c
+        LOOP
+           newMaxHrs := idx.maxRegHrs;
+
+            IF idx.sfbetrm_mhrs_over != newMaxHrs AND
+                newMaxHrs >= idx.currentRegHrs  THEN
+
+                -- If the enrollment header record exists and the current max hours is not equal
+                -- to the adjusted max hours change the max hours (but if the student
+                -- is already registered for more than the calculated max do not change it
+                -- the assumption here is somebody authorized the higher hours)
+                UPDATE sfbetrm m
+                   SET m.sfbetrm_mhrs_over = newMaxHrs
+                 WHERE m.sfbetrm_pidm = idx.pidm
+                   AND m.sfbetrm_term_code = idx.term_code;
+
+           END IF;
+        END LOOP;
+        COMMIT;
+
+     END;
+     ----------------------------------------------------------------------------------------
+     ----------------------------------------------------------------------------------------
+     PROCEDURE p_uc_deleteAllFromRegGroup(term_code_in    sfbrgrp.sfbrgrp_term_code%TYPE,
+                                          regGroupCode_in sfbrgrp.sfbrgrp_rgrp_code%TYPE)
+     IS
+     BEGIN
+
+            DELETE FROM sfbrgrp p
+            WHERE p.sfbrgrp_rgrp_code = regGroupCode_in
+              AND p.sfbrgrp_term_code = term_code_in;
+
+            COMMIT;
+     END;
+     ----------------------------------------------------------------------------------------
+     ----------------------------------------------------------------------------------------
+     PROCEDURE p_uc_insertIntoRegGroup (term_code_in    sfbrgrp.sfbrgrp_term_code%TYPE,
+                                        regGroupCode_in sfbrgrp.sfbrgrp_rgrp_code%TYPE,
+                                        pidm_in         sfbrgrp.sfbrgrp_pidm%TYPE)
+
+     IS
+          validGroupCnt NUMBER(4);
+     BEGIN
+
+          -- Is the group a valid group?
+          SELECT COUNT(*)
+            INTO validGroupCnt
+            FROM sfbwctl w
+           WHERE w.sfbwctl_rgrp_code = regGroupCode_in
+             AND w.sfbwctl_term_code = term_code_in;
+
+           IF validGroupCnt = 1 THEN
+
+              -- Get rid of any other groups
+              DELETE FROM sfbrgrp
+               WHERE sfbrgrp_pidm = pidm_in
+                 AND sfbrgrp_term_code = term_code_in;
+
+              -- Insert the new one
+              INSERT INTO sfbrgrp
+              (sfbrgrp_term_code, sfbrgrp_pidm, sfbrgrp_rgrp_code,
+               sfbrgrp_user, sfbrgrp_activity_date )
+              VALUES
+              (term_code_in, pidm_in, regGroupCode_in,' BANINST1', TRUNC(SYSDATE));
+
+              COMMIT;
+           END IF;
+      END;
+      ----------------------------------------------------------------------------------------
+      ----------------------------------------------------------------------------------------
+      PROCEDURE p_uc_priority_reg_stud (reg_term_code_in sfbrgrp.sfbrgrp_term_code%TYPE )
+      IS
+
+          lastRegTerm       stvterm.stvterm_code%TYPE;
+          lastSummerRegTerm stvterm.stvterm_code%TYPE;
+          priorSportsTerm   stvterm.stvterm_code%TYPE;
+          newRegGroup       sfbrgrp.sfbrgrp_rgrp_code%TYPE;
+
+          CURSOR disa_c IS
+          SELECT nx.sgbstdn_pidm pidm,
+                 nx.sgbstdn_camp_code camp_code,
+                 nx.sgbstdn_styp_code styp_code,
+                 nx.sgbstdn_program_1 program_1,
+                 fx.sfbrgrp_rgrp_code,
+                 t.sfrwctl_begin_date
+           FROM sfrwctl t, sfbwctl b, sfbrgrp fx, sgbstdn nx, sgrdisa d
+          WHERE TO_DATE(t.sfrwctl_begin_date||' '||t.sfrwctl_hour_begin,'DD-MON-YYYY HH24:MI')  >
+                                              ( SELECT TO_DATE(t2.sfrwctl_begin_date||' '||t2.sfrwctl_hour_begin,'DD-MON-YYYY HH24:MI')
+                                                  FROM sfrwctl t2, sfbwctl b2
+                                                 WHERE t2.sfrwctl_priority = b2.sfbwctl_priority
+                                                   AND t2.sfrwctl_term_code = b2.sfbwctl_term_code
+                                                   AND b2.sfbwctl_rgrp_code = 'LS'
+                                                   AND b2.sfbwctl_term_code = reg_term_code_in)
+            AND t.sfrwctl_priority = b.sfbwctl_priority
+            AND t.sfrwctl_term_code = b.sfbwctl_term_code
+            AND b.sfbwctl_rgrp_code = fx.sfbrgrp_rgrp_code
+            AND b.sfbwctl_term_code = fx.sfbrgrp_term_code
+            AND fx.sfbrgrp_term_code = reg_term_code_in
+            AND fx.sfbrgrp_pidm = nx.sgbstdn_pidm
+            AND nx.sgbstdn_levl_code = 'UG'
+            AND nx.sgbstdn_stst_code = 'AS'
+            AND nx.sgbstdn_term_code_eff =  (SELECT MAX(gx.sgbstdn_term_code_eff)
+                                               FROM sgbstdn gx
+                                              WHERE gx.sgbstdn_term_code_eff <= reg_term_code_in
+                                                AND gx.sgbstdn_pidm = nx.sgbstdn_pidm )
+             AND nx.sgbstdn_pidm = d.sgrdisa_pidm
+             AND d.sgrdisa_disa_code = 'PR'
+             AND d.sgrdisa_term_code IN ( reg_term_code_in,lastRegTerm );
+
+        CURSOR heop_trio_c IS
+        SELECT sgbstdn_pidm pidm,
+               s.sgbstdn_camp_code camp_code,
+               s.sgbstdn_styp_code styp_code
+          FROM sfrwctl t, sfbwctl b, sfbrgrp fx, sgbstdn s, syracct a
+         WHERE TO_DATE(t.sfrwctl_begin_date||' '||t.sfrwctl_hour_begin,'DD-MON-YYYY HH24:MI')  >
+                                              ( SELECT TO_DATE(t2.sfrwctl_begin_date||' '||t2.sfrwctl_hour_begin,'DD-MON-YYYY HH24:MI')
+                                                  FROM sfrwctl t2, sfbwctl b2
+                                                 WHERE t2.sfrwctl_priority = b2.sfbwctl_priority
+                                                   AND t2.sfrwctl_term_code = b2.sfbwctl_term_code
+                                                   AND b2.sfbwctl_rgrp_code = 'HEOP_TRIO'
+                                                   AND b2.sfbwctl_term_code = reg_term_code_in)
+            AND t.sfrwctl_priority = b.sfbwctl_priority
+            AND t.sfrwctl_term_code = b.sfbwctl_term_code
+            AND b.sfbwctl_rgrp_code = fx.sfbrgrp_rgrp_code
+            AND b.sfbwctl_term_code = fx.sfbrgrp_term_code
+            AND fx.sfbrgrp_term_code = reg_term_code_in
+            AND fx.sfbrgrp_pidm = s.sgbstdn_pidm
+            AND ( f_uc_getstudentattribute(s.sgbstdn_pidm,'A6',reg_term_code_in ) = 'A6'
+                  OR
+                  f_uc_getstudentattribute(s.sgbstdn_pidm,'TRIO',reg_term_code_in ) = 'TRIO'
+                  OR
+                  f_uc_getstudentattribute(s.sgbstdn_pidm,'TRIO',reg_term_code_in ) = 'PASS')
+            AND s.sgbstdn_levl_code = 'UG'
+            AND s.sgbstdn_stst_code = 'AS'
+            AND s.sgbstdn_term_code_eff = (SELECT MAX(s2.sgbstdn_term_code_eff)
+                                            FROM sgbstdn s2
+                                           WHERE s2.sgbstdn_term_code_eff <= reg_term_code_in
+                                             AND s2.sgbstdn_pidm = s.sgbstdn_pidm)
+            AND s.sgbstdn_pidm = a.syracct_pidm;
+
+
+
+
+        CURSOR honr_c IS
+        SELECT sgbstdn_pidm pidm,
+               s.sgbstdn_camp_code camp_code,
+               s.sgbstdn_styp_code styp_code
+          FROM sfrwctl t, sfbwctl b, sfbrgrp fx, sgbstdn s, syracct a
+         WHERE TO_DATE(t.sfrwctl_begin_date||' '||t.sfrwctl_hour_begin,'DD-MON-YYYY HH24:MI')  >
+                                              ( SELECT TO_DATE(t2.sfrwctl_begin_date||' '||t2.sfrwctl_hour_begin,'DD-MON-YYYY HH24:MI')
+                                                  FROM sfrwctl t2, sfbwctl b2
+                                                 WHERE t2.sfrwctl_priority = b2.sfbwctl_priority
+                                                   AND t2.sfrwctl_term_code = b2.sfbwctl_term_code
+                                                   AND b2.sfbwctl_rgrp_code = 'HONORS'
+                                                   AND b2.sfbwctl_term_code = reg_term_code_in)
+            AND t.sfrwctl_priority = b.sfbwctl_priority
+            AND t.sfrwctl_term_code = b.sfbwctl_term_code
+            AND b.sfbwctl_rgrp_code = fx.sfbrgrp_rgrp_code
+            AND b.sfbwctl_term_code = fx.sfbrgrp_term_code
+            AND fx.sfbrgrp_term_code = reg_term_code_in
+            AND fx.sfbrgrp_pidm = s.sgbstdn_pidm
+            AND f_uc_getstudentattribute(s.sgbstdn_pidm,'HONR',reg_term_code_in ) = 'HONR'
+            AND s.sgbstdn_levl_code = 'UG'
+            AND s.sgbstdn_stst_code = 'AS'
+            AND s.sgbstdn_term_code_eff = (SELECT MAX(s2.sgbstdn_term_code_eff)
+                                            FROM sgbstdn s2
+                                           WHERE s2.sgbstdn_term_code_eff <= reg_term_code_in
+                                             AND s2.sgbstdn_pidm = s.sgbstdn_pidm)
+            AND s.sgbstdn_pidm = a.syracct_pidm;
+
+        CURSOR ath_c IS
+        SELECT nx.sgbstdn_pidm pidm,
+               nx.sgbstdn_camp_code camp_code,
+               nx.sgbstdn_styp_code styp_code,
+               nx.sgbstdn_program_1 program_1,
+               fx.sfbrgrp_rgrp_code,
+               t.sfrwctl_begin_date
+         FROM sfrwctl t, sfbwctl b, sfbrgrp fx, sgbstdn nx, sgrsprt s
+        WHERE TRUNC(t.sfrwctl_begin_date) > ( SELECT TRUNC(t2.sfrwctl_begin_date)
+                                                FROM sfrwctl t2, sfbwctl b2
+                                               WHERE t2.sfrwctl_priority = b2.sfbwctl_priority
+                                                 AND t2.sfrwctl_term_code = b2.sfbwctl_term_code
+                                                 AND b2.sfbwctl_rgrp_code = 'ATH_1'
+                                                 AND b2.sfbwctl_term_code = reg_term_code_in)
+           AND t.sfrwctl_priority = b.sfbwctl_priority
+           AND t.sfrwctl_term_code = b.sfbwctl_term_code
+           AND b.sfbwctl_rgrp_code = fx.sfbrgrp_rgrp_code
+           AND b.sfbwctl_term_code = fx.sfbrgrp_term_code
+           AND fx.sfbrgrp_term_code = reg_term_code_in
+           AND fx.sfbrgrp_pidm = nx.sgbstdn_pidm
+           AND nx.sgbstdn_stst_code = 'AS'
+           AND nx.sgbstdn_term_code_eff =  (SELECT MAX(gx.sgbstdn_term_code_eff)
+                                              FROM sgbstdn gx
+                                             WHERE gx.sgbstdn_term_code_eff <= reg_term_code_in
+                                               AND gx.sgbstdn_pidm = nx.sgbstdn_pidm )
+           AND nx.sgbstdn_pidm = s.sgrsprt_pidm
+           AND s.sgrsprt_spst_code = 'AC'
+           AND ( s.sgrsprt_term_code = reg_term_code_in
+                 OR
+                 ( s.sgrsprt_term_code = lastRegTerm AND
+                   s.sgrsprt_actc_code IN ('SVIC','SVBK','SVSW','SVTF','SVTN','SVGF' ) )
+                 OR
+                 ( SUBSTR(reg_term_code_in ,5,2) = '80' AND
+                   s.sgrsprt_term_code = priorSportsTerm AND
+                   s.sgrsprt_actc_code IN ('SVFB','SVFH', 'SVXC', 'SVSO', 'SVVB','SVGF' ) )
+                 OR
+                 ( SUBSTR(reg_term_code_in ,5,2) = '10' AND
+                   s.sgrsprt_term_code = priorSportsTerm AND
+                   s.sgrsprt_actc_code IN ('SVBA','SVWP', 'SVLX', 'SVSF' ) )
+               );
+
+
+         -- No longer qualified for the Learning Services or Residence Hall Assistance Priority Reg Group
+         CURSOR remove_pr_group_c IS
+         SELECT fx.sfbrgrp_term_code termCode,
+                fx.sfbrgrp_pidm pidm
+           FROM sfrwctl t, sfbwctl b, sfbrgrp fx
+          WHERE NOT EXISTS (SELECT *
+                              FROM sgrdisa d
+                             WHERE d.sgrdisa_disa_code = 'PR'
+                               AND d.sgrdisa_term_code IN (lastRegTerm, reg_term_code_in )
+                               AND d.sgrdisa_pidm = fx.sfbrgrp_pidm )
+            AND t.sfrwctl_priority = b.sfbwctl_priority
+            AND t.sfrwctl_term_code = b.sfbwctl_term_code
+            AND b.sfbwctl_rgrp_code = 'LS'
+            AND b.sfbwctl_rgrp_code = fx.sfbrgrp_rgrp_code
+            AND b.sfbwctl_term_code = fx.sfbrgrp_term_code
+            AND fx.sfbrgrp_term_code = reg_term_code_in
+          UNION
+         SELECT z.sfbrgrp_term_code termCode,
+                z.sfbrgrp_pidm pidm
+           FROM sfrwctl x, sfbwctl w, sfbrgrp z
+          WHERE NOT EXISTS (SELECT e2.*
+                              FROM syrevfi e2
+                             WHERE e2.syrevfi_resident_assistant IS NOT NULL
+                               AND e2.syrevfi_term_code IN ( reg_term_code_in,lastRegTerm) )
+            AND x.sfrwctl_priority = w.sfbwctl_priority
+            AND x.sfrwctl_term_code = w.sfbwctl_term_code
+            AND w.sfbwctl_rgrp_code = 'RESASSIST'
+            AND w.sfbwctl_rgrp_code = z.sfbrgrp_rgrp_code
+            AND w.sfbwctl_term_code = z.sfbrgrp_term_code
+            AND z.sfbrgrp_term_code = reg_term_code_in;
+
+        -- UC Emergency Medical Services
+        CURSOR ucems_c IS
+        SELECT sgbstdn_pidm pidm,
+               s.sgbstdn_camp_code camp_code,
+               s.sgbstdn_styp_code styp_code
+          FROM sfrwctl t, sfbwctl b, sfbrgrp fx, sgrsact e, sgbstdn s, syracct a
+         WHERE TO_DATE(t.sfrwctl_begin_date||' '||t.sfrwctl_hour_begin,'DD-MON-YYYY HH24:MI')  >
+                                              ( SELECT TO_DATE(t2.sfrwctl_begin_date||' '||t2.sfrwctl_hour_begin,'DD-MON-YYYY HH24:MI')
+                                                  FROM sfrwctl t2, sfbwctl b2
+                                                 WHERE t2.sfrwctl_priority = b2.sfbwctl_priority
+                                                   AND t2.sfrwctl_term_code = b2.sfbwctl_term_code
+                                                   AND b2.sfbwctl_rgrp_code = 'UCEMS'
+                                                   AND b2.sfbwctl_term_code = reg_term_code_in)
+            AND t.sfrwctl_priority = b.sfbwctl_priority
+            AND t.sfrwctl_term_code = b.sfbwctl_term_code
+            AND b.sfbwctl_rgrp_code = fx.sfbrgrp_rgrp_code
+            AND b.sfbwctl_term_code = fx.sfbrgrp_term_code
+            AND fx.sfbrgrp_term_code = reg_term_code_in
+            AND fx.sfbrgrp_pidm = e.sgrsact_pidm
+            AND e.sgrsact_term_code = (SELECT MAX(e2.sgrsact_term_code)
+                                         FROM sgrsact e2
+                                        WHERE e2.sgrsact_actc_code = 'UCEMS' )
+            AND e.sgrsact_actc_code = 'UCEMS'
+            AND e.sgrsact_pidm = s.sgbstdn_pidm
+            AND s.sgbstdn_stst_code = 'AS'
+            AND s.sgbstdn_term_code_eff = (SELECT MAX(s2.sgbstdn_term_code_eff)
+                                            FROM sgbstdn s2
+                                           WHERE s2.sgbstdn_term_code_eff <= reg_term_code_in
+                                             AND s2.sgbstdn_pidm = s.sgbstdn_pidm)
+            AND s.sgbstdn_pidm = a.syracct_pidm;
+
+
+         -- Residence Hall Assistants
+         CURSOR RA_c IS
+         SELECT sgbstdn_pidm pidm,
+                s.sgbstdn_camp_code camp_code,
+                s.sgbstdn_styp_code styp_code
+           FROM sfrwctl t, sfbwctl b, sfbrgrp fx, syrevfi e, sgbstdn s, syracct a
+          WHERE TO_DATE(t.sfrwctl_begin_date||' '||t.sfrwctl_hour_begin,'DD-MON-YYYY HH24:MI')  >
+                                              ( SELECT TO_DATE(t2.sfrwctl_begin_date||' '||t2.sfrwctl_hour_begin,'DD-MON-YYYY HH24:MI')
+                                                  FROM sfrwctl t2, sfbwctl b2
+                                                 WHERE t2.sfrwctl_priority = b2.sfbwctl_priority
+                                                   AND t2.sfrwctl_term_code = b2.sfbwctl_term_code
+                                                   AND b2.sfbwctl_rgrp_code = 'RESASSIST'
+                                                   AND b2.sfbwctl_term_code = reg_term_code_in)
+            AND t.sfrwctl_priority = b.sfbwctl_priority
+            AND t.sfrwctl_term_code = b.sfbwctl_term_code
+            AND b.sfbwctl_rgrp_code = fx.sfbrgrp_rgrp_code
+            AND b.sfbwctl_term_code = fx.sfbrgrp_term_code
+            AND fx.sfbrgrp_term_code = reg_term_code_in
+            AND fx.sfbrgrp_pidm = e.syrevfi_pidm
+            AND e.syrevfi_term_code = (SELECT MAX(e2.syrevfi_term_code)
+                                         FROM syrevfi e2
+                                        WHERE e2.syrevfi_resident_assistant IS NOT NULL )
+            AND e.syrevfi_resident_assistant IS NOT NULL
+            AND e.syrevfi_pidm = s.sgbstdn_pidm
+            AND s.sgbstdn_stst_code = 'AS'
+            AND s.sgbstdn_term_code_eff = (SELECT MAX(s2.sgbstdn_term_code_eff)
+                                            FROM sgbstdn s2
+                                           WHERE s2.sgbstdn_term_code_eff <= reg_term_code_in
+                                             AND s2.sgbstdn_pidm = s.sgbstdn_pidm)
+            AND s.sgbstdn_pidm = a.syracct_pidm;
+
+
+
+      BEGIN
+
+           SELECT MAX(m.stvterm_code)
+             INTO lastRegTerm
+             FROM stvterm m
+            WHERE SUBSTR(m.stvterm_code,5,2) IN ('80','10')
+              AND m.stvterm_code < reg_term_code_in;
+
+            SELECT MAX(m.stvterm_code)
+              INTO priorSportsTerm
+              FROM stvterm m
+             WHERE SUBSTR(m.stvterm_code,5,2) = SUBSTR(reg_term_code_in,5,2)
+               AND SUBSTR(m.stvterm_code,5,2) IN ('80','10')
+               AND m.stvterm_code < reg_term_code_in;
+
+
+            --- Learning Services -------------------------------------------------------------
+            FOR idx IN disa_c
+            LOOP
+                  sykolrg.p_uc_insertIntoRegGroup (reg_term_code_in, 'LS', idx.pidm);
+
+            END LOOP;
+            ------------------------------------------------------------------------------------
+
+            --- HEOP or TRIO -------------------------------------------------------------------
+            FOR idx IN heop_trio_c
+            LOOP
+                  sykolrg.p_uc_insertIntoRegGroup (reg_term_code_in, 'HEOP_TRIO', idx.pidm);
+
+            END LOOP;
+
+            ------------------------------------------------------------------------------------
+
+            --- Honors -------------------------------------------------------------------------
+            FOR hdx IN honr_c
+            LOOP
+                 sykolrg.p_uc_insertIntoRegGroup (reg_term_code_in, 'HONORS', hdx.pidm);
+
+            END LOOP;
+            COMMIT;
+            -------------------------------------------------------------------------------------
+
+            -- EMS ------------------------------------------------------------------------------
+            FOR idx IN ucems_c
+            LOOP
+               sykolrg.p_uc_insertIntoRegGroup (reg_term_code_in, 'UCEMS', idx.pidm);
+
+               IF reg_term_code_in LIKE '%80' THEN
+                  sykolrg.p_uc_insertIntoRegGroup (SUBSTR(reg_term_code_in,1,4)||'50', 'UCEMS', idx.pidm);
+               END IF;
+
+            END LOOP;
+            COMMIT;
+
+            -- Residence Hall Assistants ---------------------------------------------------------------
+            FOR idx IN RA_c
+            LOOP
+               sykolrg.p_uc_insertIntoRegGroup (reg_term_code_in, 'RESASSIST', idx.pidm);
+
+               IF reg_term_code_in LIKE '%80' THEN
+                  sykolrg.p_uc_insertIntoRegGroup (SUBSTR(reg_term_code_in,1,4)||'50', 'RESASSIST', idx.pidm);
+               END IF;
+
+            END LOOP;
+            COMMIT;
+
+            --- Athletes-- -----------------------------------------------------------------------------
+            FOR adx IN ath_c
+            LOOP
+               sykolrg.p_uc_insertIntoRegGroup (reg_term_code_in, 'ATH_1', adx.pidm);
+
+               IF reg_term_code_in LIKE '%80' THEN
+                  sykolrg.p_uc_insertIntoRegGroup (SUBSTR(reg_term_code_in,1,4)||'50', 'ATH_1', adx.pidm);
+               END IF;
+
+            END LOOP;
+            COMMIT;
+
+            ------------------------------------------------------------------------------------------
+            -- Learning Services has removed the Priority Registration Code or person no longer Residence Assistand
+            -- so reassign to a different reg group
+            FOR lsx IN remove_pr_group_c
+            LOOP
+               newRegGroup := NULL;
+               newRegGroup := sykolrg.f_uc_assign_reg_group(lsx.pidm, reg_term_code_in);
+
+               sykolrg.p_uc_insertIntoRegGroup (reg_term_code_in, newRegGroup, lsx.pidm);
+
+            END LOOP;
+            COMMIT;
+
+      END;
+      ---------------------------------------------------------------------------------------------
+      ---------------------------------------------------------------------------------------------
+      PROCEDURE p_uc_ins_dupl_overrides (term_code_in stvterm.stvterm_code%TYPE)
+      IS
+      BEGIN
+
+
+        -- Insert an duplicate residency (995) course override for each MGT
+        INSERT INTO sfrsrpo
+        ( sfrsrpo_term_code, sfrsrpo_pidm, sfrsrpo_rovr_code, sfrsrpo_subj_code, sfrsrpo_crse_numb,
+          sfrsrpo_activity_date, sfrsrpo_seq_numb, sfrsrpo_crn, sfrsrpo_user )
+        SELECT term_code_in, n.sgbstdn_pidm, 'DUPLICATE', 'MGT', '995',
+                 TRUNC(SYSDATE), NULL, NULL, 'DMORISE'
+          FROM sgbstdn n
+         WHERE NOT EXISTS (SELECT *
+                             FROM sfrsrpo o
+                            WHERE o.sfrsrpo_rovr_code = 'DUPLICATE'
+                              AND o.sfrsrpo_crse_numb = '995'
+                              AND o.sfrsrpo_subj_code = 'MGT'
+                              AND o.sfrsrpo_pidm = n.sgbstdn_pidm
+                              AND o.sfrsrpo_term_code = term_code_in )
+          AND n.sgbstdn_program_1 IN ('MBA-ACY','MBA-ECF')
+          AND n.sgbstdn_stst_code = 'AS'
+          AND n.sgbstdn_term_code_eff = (SELECT MAX(n2.sgbstdn_term_code_eff)
+                                           FROM sgbstdn n2
+                                          WHERE n2.sgbstdn_pidm = n.sgbstdn_pidm
+                                            AND n2.sgbstdn_term_code_eff <= term_code_in)
+        GROUP BY n.sgbstdn_pidm;
+        COMMIT;
+
+        -- Insert an duplicate residency (995) course override for ECM
+        INSERT INTO sfrsrpo
+        ( sfrsrpo_term_code, sfrsrpo_pidm, sfrsrpo_rovr_code, sfrsrpo_subj_code, sfrsrpo_crse_numb,
+          sfrsrpo_activity_date, sfrsrpo_seq_numb, sfrsrpo_crn, sfrsrpo_user )
+        SELECT term_code_in, n.sgbstdn_pidm, 'DUPLICATE', 'ECM', '995',
+                  TRUNC(SYSDATE), NULL, NULL, 'DMORISE'
+          FROM sgbstdn n
+         WHERE NOT EXISTS (SELECT *
+                             FROM sfrsrpo o
+                            WHERE o.sfrsrpo_rovr_code = 'DUPLICATE'
+                              AND o.sfrsrpo_crse_numb = '995'
+                              AND o.sfrsrpo_subj_code = 'ECM'
+                              AND o.sfrsrpo_pidm = n.sgbstdn_pidm
+                              AND o.sfrsrpo_term_code = term_code_in )
+          AND n.sgbstdn_program_1 = 'MS-ECM'
+          AND n.sgbstdn_stst_code = 'AS'
+          AND n.sgbstdn_term_code_eff = (SELECT MAX(n2.sgbstdn_term_code_eff)
+                                           FROM sgbstdn n2
+                                          WHERE n2.sgbstdn_pidm = n.sgbstdn_pidm
+                                            AND n2.sgbstdn_term_code_eff <= term_code_in)
+        GROUP BY n.sgbstdn_pidm;
+        COMMIT;
+
+        -- Insert an duplicate residency (995) course override for TDPT-PHT
+        INSERT INTO sfrsrpo
+        ( sfrsrpo_term_code, sfrsrpo_pidm, sfrsrpo_rovr_code, sfrsrpo_subj_code, sfrsrpo_crse_numb,
+          sfrsrpo_activity_date, sfrsrpo_seq_numb, sfrsrpo_crn, sfrsrpo_user )
+        SELECT term_code_in, n.sgbstdn_pidm, 'DUPLICATE', 'PHT', '995',
+                 TRUNC(SYSDATE), NULL, NULL, 'DMORISE'
+          FROM sgbstdn n
+         WHERE NOT EXISTS (SELECT *
+                             FROM sfrsrpo o
+                            WHERE o.sfrsrpo_rovr_code = 'DUPLICATE'
+                              AND o.sfrsrpo_crse_numb = '995'
+                              AND o.sfrsrpo_subj_code = 'PHT'
+                              AND o.sfrsrpo_pidm = n.sgbstdn_pidm
+                              AND o.sfrsrpo_term_code = term_code_in )
+          AND n.sgbstdn_program_1 = 'TDPT-PHT'
+          AND n.sgbstdn_stst_code = 'AS'
+          AND n.sgbstdn_term_code_eff = (SELECT MAX(n2.sgbstdn_term_code_eff)
+                                           FROM sgbstdn n2
+                                          WHERE n2.sgbstdn_pidm = n.sgbstdn_pidm
+                                            AND n2.sgbstdn_term_code_eff <= term_code_in)
+       GROUP BY n.sgbstdn_pidm;
+       COMMIT;
+
+       -- Insert an duplicate residency (995) course override for MS-CIF-OL Cyber
+       INSERT INTO sfrsrpo
+       ( sfrsrpo_term_code, sfrsrpo_pidm, sfrsrpo_rovr_code, sfrsrpo_subj_code, sfrsrpo_crse_numb,
+         sfrsrpo_activity_date, sfrsrpo_seq_numb, sfrsrpo_crn, sfrsrpo_user )
+       SELECT term_code_in, n.sgbstdn_pidm, 'DUPLICATE', 'CYB', '995',
+                 TRUNC(SYSDATE), NULL, NULL, 'DMORISE'
+          FROM sgbstdn n
+         WHERE NOT EXISTS (SELECT *
+                             FROM sfrsrpo o
+                            WHERE o.sfrsrpo_rovr_code = 'DUPLICATE'
+                              AND o.sfrsrpo_crse_numb = '995'
+                              AND o.sfrsrpo_subj_code = 'CYB'
+                              AND o.sfrsrpo_pidm = n.sgbstdn_pidm
+                              AND o.sfrsrpo_term_code = term_code_in )
+          AND n.sgbstdn_program_1 = 'MS-CIF-OL'
+          AND n.sgbstdn_stst_code = 'AS'
+          AND n.sgbstdn_term_code_eff = (SELECT MAX(n2.sgbstdn_term_code_eff)
+                                           FROM sgbstdn n2
+                                          WHERE n2.sgbstdn_pidm = n.sgbstdn_pidm
+                                            AND n2.sgbstdn_term_code_eff <= term_code_in)
+       GROUP BY n.sgbstdn_pidm;
+       COMMIT;
+
+   END;
+   ------------------------------------------------------------------------------------------
+   ------------------------------------------------------------------------------------------
+   PROCEDURE p_uc_insOverrides_from_waivers (term_code_in stvterm.stvterm_code%TYPE)
+   IS
+   BEGIN
+
+        -- For any active student that has a 101 foreign language waiver
+        -- or a 101 English waiver insert a 102 prerequisite override for the same subject
+        -- (if they do not already have an an override and they haven't taken the course and
+        -- a 102 course of the same subject is offered this term)
+        INSERT INTO sfrsrpo
+         ( sfrsrpo_term_code, sfrsrpo_pidm, sfrsrpo_rovr_code,
+           sfrsrpo_subj_code, sfrsrpo_crse_numb,
+           sfrsrpo_activity_date, sfrsrpo_seq_numb, sfrsrpo_crn, sfrsrpo_user )
+        SELECT DISTINCT s.ssbsect_term_code, v.smrswav_pidm, 'PREREQ',
+               s.ssbsect_subj_code, s.ssbsect_crse_numb ,
+               TRUNC(SYSDATE), NULL, NULL, 'DMORISE'
+          FROM sgbstdn g, ssbsect s, smrswav v
+         WHERE g.sgbstdn_levl_code = 'UG'
+           AND g.sgbstdn_stst_code = 'AS'
+           AND g.sgbstdn_term_code_eff = (SELECT MAX(g2.sgbstdn_term_code_eff)
+                                            FROM sgbstdn g2
+                                           WHERE g2.sgbstdn_term_code_eff <= term_code_in
+                                             AND g2.sgbstdn_pidm = v.smrswav_pidm)
+           AND g.sgbstdn_pidm = v.smrswav_pidm
+           AND NOT EXISTS (SELECT *
+                             FROM shrtckn gn
+                            WHERE NVL(gn.shrtckn_repeat_course_ind,'I') = 'I'
+                              AND gn.shrtckn_crse_numb = s.ssbsect_crse_numb
+                              AND gn.shrtckn_subj_code = s.ssbsect_subj_code
+                              AND gn.shrtckn_pidm = v.smrswav_pidm)
+           AND NOT EXISTS (SELECT *
+                             FROM stvrsts v, sfrstcr r
+                            WHERE v.stvrsts_incl_sect_enrl = 'Y'
+                              AND v.stvrsts_code = r.sfrstcr_rsts_code
+                              AND r.sfrstcr_crn = s.ssbsect_crn
+                              AND r.sfrstcr_term_code = s.ssbsect_term_code
+                              AND r.sfrstcr_pidm = v.smrswav_pidm)
+           AND NOT EXISTS (SELECT *
+                             FROM sfrsrpo o
+                            WHERE o.sfrsrpo_rovr_code = 'PREREQ'
+                              AND o.sfrsrpo_crse_numb = s.ssbsect_crse_numb
+                              AND o.sfrsrpo_subj_code = s.ssbsect_subj_code
+                              AND o.sfrsrpo_pidm = v.smrswav_pidm
+                              AND o.sfrsrpo_term_code = s.ssbsect_term_code )
+           AND s.ssbsect_ssts_code = 'A'
+           AND s.ssbsect_crse_numb = '102'
+           AND s.ssbsect_subj_code = v.smrswav_subj_code
+           AND s.ssbsect_term_code = term_code_in
+           AND v.smrswav_crse_numb = '101'
+           AND (v.smrswav_area LIKE 'GE1FL%' OR v.smrswav_area  = 'GE1WC');
+
+
+        -- If the student is waived from a 102 foreign language override the prereq on
+        -- the 201 course of the same subject
+        INSERT INTO sfrsrpo
+         ( sfrsrpo_term_code, sfrsrpo_pidm, sfrsrpo_rovr_code,
+           sfrsrpo_subj_code, sfrsrpo_crse_numb,
+           sfrsrpo_activity_date, sfrsrpo_seq_numb, sfrsrpo_crn, sfrsrpo_user )
+        SELECT DISTINCT s.ssbsect_term_code, v.smrswav_pidm, 'PREREQ',
+               s.ssbsect_subj_code, s.ssbsect_crse_numb ,
+               TRUNC(SYSDATE), NULL, NULL, 'DMORISE'
+          FROM sgbstdn g, ssbsect s, smrswav v
+         WHERE g.sgbstdn_levl_code = 'UG'
+           AND g.sgbstdn_stst_code = 'AS'
+           AND g.sgbstdn_term_code_eff = (SELECT MAX(g2.sgbstdn_term_code_eff)
+                                            FROM sgbstdn g2
+                                           WHERE g2.sgbstdn_term_code_eff <= term_code_in
+                                             AND g2.sgbstdn_pidm = v.smrswav_pidm)
+           AND g.sgbstdn_pidm = v.smrswav_pidm
+           AND NOT EXISTS (SELECT *
+                             FROM shrtckn gn
+                            WHERE NVL(gn.shrtckn_repeat_course_ind,'I') = 'I'
+                              AND gn.shrtckn_crse_numb = s.ssbsect_crse_numb
+                              AND gn.shrtckn_subj_code = s.ssbsect_subj_code
+                              AND gn.shrtckn_pidm = v.smrswav_pidm)
+           AND NOT EXISTS (SELECT *
+                             FROM stvrsts v, sfrstcr r
+                            WHERE v.stvrsts_incl_sect_enrl = 'Y'
+                              AND v.stvrsts_code = r.sfrstcr_rsts_code
+                              AND r.sfrstcr_crn = s.ssbsect_crn
+                              AND r.sfrstcr_term_code = s.ssbsect_term_code
+                              AND r.sfrstcr_pidm = v.smrswav_pidm)
+           AND NOT EXISTS (SELECT *
+                             FROM sfrsrpo o
+                            WHERE o.sfrsrpo_rovr_code = 'PREREQ'
+                              AND o.sfrsrpo_crse_numb = s.ssbsect_crse_numb
+                              AND o.sfrsrpo_subj_code = s.ssbsect_subj_code
+                              AND o.sfrsrpo_pidm = v.smrswav_pidm
+                              AND o.sfrsrpo_term_code = s.ssbsect_term_code )
+           AND s.ssbsect_ssts_code = 'A'
+           AND s.ssbsect_crse_numb = '201'
+           AND s.ssbsect_subj_code = v.smrswav_subj_code
+           AND s.ssbsect_term_code = term_code_in
+           AND v.smrswav_crse_numb = '102'
+           AND v.smrswav_area LIKE 'GE1FL%' ;
+
+
+        -- If the student is waived from a ENG 102 override the prereq on
+        -- the ENG 315 and ENG 324X course. Per Rober Halliday/Mary Anne Janda
+        INSERT INTO sfrsrpo
+         ( sfrsrpo_term_code, sfrsrpo_pidm, sfrsrpo_rovr_code,
+           sfrsrpo_subj_code, sfrsrpo_crse_numb,
+           sfrsrpo_activity_date, sfrsrpo_seq_numb, sfrsrpo_crn, sfrsrpo_user )
+        SELECT DISTINCT s.ssbsect_term_code, v.smrswav_pidm, 'PREREQ',
+               s.ssbsect_subj_code, s.ssbsect_crse_numb ,
+               TRUNC(SYSDATE), NULL, NULL, 'DMORISE'
+          FROM sgbstdn g, ssbsect s, smrswav v
+         WHERE g.sgbstdn_levl_code = 'UG'
+           AND g.sgbstdn_stst_code = 'AS'
+           AND g.sgbstdn_term_code_eff = (SELECT MAX(g2.sgbstdn_term_code_eff)
+                                            FROM sgbstdn g2
+                                           WHERE g2.sgbstdn_term_code_eff <= term_code_in
+                                             AND g2.sgbstdn_pidm = v.smrswav_pidm)
+           AND g.sgbstdn_pidm = v.smrswav_pidm
+           AND NOT EXISTS (SELECT *
+                             FROM shrtckn gn
+                            WHERE NVL(gn.shrtckn_repeat_course_ind,'I') = 'I'
+                              AND gn.shrtckn_crse_numb = s.ssbsect_crse_numb
+                              AND gn.shrtckn_subj_code = s.ssbsect_subj_code
+                              AND gn.shrtckn_pidm = v.smrswav_pidm)
+           AND NOT EXISTS (SELECT *
+                             FROM stvrsts v, sfrstcr r
+                            WHERE v.stvrsts_incl_sect_enrl = 'Y'
+                              AND v.stvrsts_code = r.sfrstcr_rsts_code
+                              AND r.sfrstcr_crn = s.ssbsect_crn
+                              AND r.sfrstcr_term_code = s.ssbsect_term_code
+                              AND r.sfrstcr_pidm = v.smrswav_pidm)
+           AND NOT EXISTS (SELECT *
+                             FROM sfrsrpo o
+                            WHERE o.sfrsrpo_rovr_code = 'PREREQ'
+                              AND o.sfrsrpo_crse_numb = s.ssbsect_crse_numb
+                              AND o.sfrsrpo_subj_code = s.ssbsect_subj_code
+                              AND o.sfrsrpo_pidm = v.smrswav_pidm
+                              AND o.sfrsrpo_term_code = s.ssbsect_term_code )
+           AND s.ssbsect_ssts_code = 'A'
+           AND s.ssbsect_crse_numb IN ( '315','324X')
+           AND s.ssbsect_subj_code = v.smrswav_subj_code
+           AND s.ssbsect_term_code = term_code_in
+           AND v.smrswav_crse_numb = '102'
+           AND v.smrswav_subj_code = 'ENG';
+
+           -- Waived from ENG 102 met pre-req for PRL 285 per Robert Halliday/Paul Macarthur
+           INSERT INTO sfrsrpo
+         ( sfrsrpo_term_code, sfrsrpo_pidm, sfrsrpo_rovr_code,
+           sfrsrpo_subj_code, sfrsrpo_crse_numb,
+           sfrsrpo_activity_date, sfrsrpo_seq_numb, sfrsrpo_crn, sfrsrpo_user )
+        SELECT DISTINCT s.ssbsect_term_code, v.smrswav_pidm, 'PREREQ',
+               s.ssbsect_subj_code, s.ssbsect_crse_numb ,
+               TRUNC(SYSDATE), NULL, NULL, 'DMORISE'
+          FROM sgbstdn g, ssbsect s, smrswav v
+         WHERE NOT EXISTS (SELECT *
+                    FROM sortest t
+                   WHERE t.sortest_tesc_code = 'ENP'
+                     AND t.sortest_pidm = v.smrswav_pidm)
+           AND g.sgbstdn_levl_code = 'UG'
+           AND g.sgbstdn_stst_code = 'AS'
+           AND g.sgbstdn_term_code_eff = (SELECT MAX(g2.sgbstdn_term_code_eff)
+                                            FROM sgbstdn g2
+                                           WHERE g2.sgbstdn_term_code_eff <= term_code_in
+                                             AND g2.sgbstdn_pidm = v.smrswav_pidm)
+           AND g.sgbstdn_pidm = v.smrswav_pidm
+           AND NOT EXISTS (SELECT *
+                             FROM shrtckn gn
+                            WHERE NVL(gn.shrtckn_repeat_course_ind,'I') = 'I'
+                              AND gn.shrtckn_crse_numb = s.ssbsect_crse_numb
+                              AND gn.shrtckn_subj_code = s.ssbsect_subj_code
+                              AND gn.shrtckn_pidm = v.smrswav_pidm)
+           AND NOT EXISTS (SELECT *
+                             FROM stvrsts v, sfrstcr r
+                            WHERE v.stvrsts_incl_sect_enrl = 'Y'
+                              AND v.stvrsts_code = r.sfrstcr_rsts_code
+                              AND r.sfrstcr_crn = s.ssbsect_crn
+                              AND r.sfrstcr_term_code = s.ssbsect_term_code
+                              AND r.sfrstcr_pidm = v.smrswav_pidm)
+           AND NOT EXISTS (SELECT *
+                             FROM sfrsrpo o
+                            WHERE o.sfrsrpo_rovr_code = 'PREREQ'
+                              AND o.sfrsrpo_crse_numb = s.ssbsect_crse_numb
+                              AND o.sfrsrpo_subj_code = s.ssbsect_subj_code
+                              AND o.sfrsrpo_pidm = v.smrswav_pidm
+                              AND o.sfrsrpo_term_code = s.ssbsect_term_code )
+           AND s.ssbsect_ssts_code = 'A'
+           AND s.ssbsect_crse_numb = '285'
+           AND s.ssbsect_subj_code = 'PRL'
+           AND s.ssbsect_term_code = term_code_in
+           AND v.smrswav_crse_numb =  '102'
+           AND v.smrswav_subj_code = 'ENG';
+
+
+        -- Waiver on MAT 104 override the pre-req on MAT 107 143 112 151
+        INSERT INTO sfrsrpo
+         ( sfrsrpo_term_code, sfrsrpo_pidm, sfrsrpo_rovr_code,
+           sfrsrpo_subj_code, sfrsrpo_crse_numb,
+           sfrsrpo_activity_date, sfrsrpo_seq_numb, sfrsrpo_crn, sfrsrpo_user )
+        SELECT DISTINCT s.ssbsect_term_code, v.smrswav_pidm, 'PREREQ',
+               s.ssbsect_subj_code, s.ssbsect_crse_numb ,
+               TRUNC(SYSDATE), NULL, NULL, 'DMORISE'
+          FROM sgbstdn g, ssbsect s, smrswav v
+         WHERE NOT EXISTS (SELECT *
+                    FROM sortest t
+                   WHERE t.sortest_tesc_code in ('3C','MP')
+                     AND t.sortest_pidm = v.smrswav_pidm)
+           AND g.sgbstdn_levl_code = 'UG'
+           AND g.sgbstdn_stst_code = 'AS'
+           AND g.sgbstdn_term_code_eff = (SELECT MAX(g2.sgbstdn_term_code_eff)
+                                            FROM sgbstdn g2
+                                           WHERE g2.sgbstdn_term_code_eff <= term_code_in
+                                             AND g2.sgbstdn_pidm = v.smrswav_pidm)
+           AND g.sgbstdn_pidm = v.smrswav_pidm
+           AND NOT EXISTS (SELECT *
+                             FROM shrtckn gn
+                            WHERE NVL(gn.shrtckn_repeat_course_ind,'I') = 'I'
+                              AND gn.shrtckn_crse_numb = s.ssbsect_crse_numb
+                              AND gn.shrtckn_subj_code = s.ssbsect_subj_code
+                              AND gn.shrtckn_pidm = v.smrswav_pidm)
+           AND NOT EXISTS (SELECT *
+                             FROM stvrsts v, sfrstcr r
+                            WHERE v.stvrsts_incl_sect_enrl = 'Y'
+                              AND v.stvrsts_code = r.sfrstcr_rsts_code
+                              AND r.sfrstcr_crn = s.ssbsect_crn
+                              AND r.sfrstcr_term_code = s.ssbsect_term_code
+                              AND r.sfrstcr_pidm = v.smrswav_pidm)
+           AND NOT EXISTS (SELECT *
+                             FROM sfrsrpo o
+                            WHERE o.sfrsrpo_rovr_code = 'PREREQ'
+                              AND o.sfrsrpo_crse_numb = s.ssbsect_crse_numb
+                              AND o.sfrsrpo_subj_code = s.ssbsect_subj_code
+                              AND o.sfrsrpo_pidm = v.smrswav_pidm
+                              AND o.sfrsrpo_term_code = s.ssbsect_term_code )
+           AND s.ssbsect_ssts_code = 'A'
+           AND s.ssbsect_crse_numb IN ('107','112','143','151')
+           AND s.ssbsect_subj_code = v.smrswav_subj_code
+           AND s.ssbsect_term_code = term_code_in
+           AND v.smrswav_crse_numb = '104'
+           AND v.smrswav_subj_code = 'MAT';
+
+
+        INSERT INTO sfrsrpo
+         ( sfrsrpo_term_code, sfrsrpo_pidm, sfrsrpo_rovr_code,
+           sfrsrpo_subj_code, sfrsrpo_crse_numb,
+           sfrsrpo_activity_date, sfrsrpo_seq_numb, sfrsrpo_crn, sfrsrpo_user )
+        SELECT DISTINCT s.ssbsect_term_code, v.smrswav_pidm, 'PREREQ',
+               s.ssbsect_subj_code, s.ssbsect_crse_numb ,
+               TRUNC(SYSDATE), NULL, NULL, 'DMORISE'
+          FROM sgbstdn g, ssbsect s, smrswav v
+         WHERE NOT EXISTS (SELECT *
+                    FROM sortest t
+                   WHERE t.sortest_tesc_code in ('3C','MP')
+                     AND t.sortest_pidm = v.smrswav_pidm)
+           AND g.sgbstdn_levl_code = 'UG'
+           AND g.sgbstdn_stst_code = 'AS'
+           AND g.sgbstdn_term_code_eff = (SELECT MAX(g2.sgbstdn_term_code_eff)
+                                            FROM sgbstdn g2
+                                           WHERE g2.sgbstdn_term_code_eff <= term_code_in
+                                             AND g2.sgbstdn_pidm = v.smrswav_pidm)
+           AND g.sgbstdn_pidm = v.smrswav_pidm
+           AND NOT EXISTS (SELECT *
+                             FROM shrtckn gn
+                            WHERE NVL(gn.shrtckn_repeat_course_ind,'I') = 'I'
+                              AND gn.shrtckn_crse_numb = s.ssbsect_crse_numb
+                              AND gn.shrtckn_subj_code = s.ssbsect_subj_code
+                              AND gn.shrtckn_pidm = v.smrswav_pidm)
+           AND NOT EXISTS (SELECT *
+                             FROM stvrsts v, sfrstcr r
+                            WHERE v.stvrsts_incl_sect_enrl = 'Y'
+                              AND v.stvrsts_code = r.sfrstcr_rsts_code
+                              AND r.sfrstcr_crn = s.ssbsect_crn
+                              AND r.sfrstcr_term_code = s.ssbsect_term_code
+                              AND r.sfrstcr_pidm = v.smrswav_pidm)
+           AND NOT EXISTS (SELECT *
+                             FROM sfrsrpo o
+                            WHERE o.sfrsrpo_rovr_code = 'PREREQ'
+                              AND o.sfrsrpo_crse_numb = s.ssbsect_crse_numb
+                              AND o.sfrsrpo_subj_code = s.ssbsect_subj_code
+                              AND o.sfrsrpo_pidm = v.smrswav_pidm
+                              AND o.sfrsrpo_term_code = s.ssbsect_term_code )
+           AND s.ssbsect_ssts_code = 'A'
+           AND s.ssbsect_crse_numb IN ('104','112')
+           AND s.ssbsect_subj_code = v.smrswav_subj_code
+           AND s.ssbsect_term_code = term_code_in
+           AND v.smrswav_crse_numb = '107'
+           AND v.smrswav_subj_code = 'MAT';
+
+
+       INSERT INTO sfrsrpo
+         ( sfrsrpo_term_code, sfrsrpo_pidm, sfrsrpo_rovr_code,
+           sfrsrpo_subj_code, sfrsrpo_crse_numb,
+           sfrsrpo_activity_date, sfrsrpo_seq_numb, sfrsrpo_crn, sfrsrpo_user )
+        SELECT DISTINCT s.ssbsect_term_code, v.smrswav_pidm, 'PREREQ',
+               s.ssbsect_subj_code, s.ssbsect_crse_numb ,
+               TRUNC(SYSDATE), NULL, NULL, 'DMORISE'
+          FROM sgbstdn g, ssbsect s, smrswav v
+         WHERE NOT EXISTS (SELECT *
+                    FROM sortest t
+                   WHERE t.sortest_tesc_code in ('3C','MP')
+                     AND t.sortest_pidm = v.smrswav_pidm)
+           AND g.sgbstdn_levl_code = 'UG'
+           AND g.sgbstdn_stst_code = 'AS'
+           AND g.sgbstdn_term_code_eff = (SELECT MAX(g2.sgbstdn_term_code_eff)
+                                            FROM sgbstdn g2
+                                           WHERE g2.sgbstdn_term_code_eff <= term_code_in
+                                             AND g2.sgbstdn_pidm = v.smrswav_pidm)
+           AND g.sgbstdn_pidm = v.smrswav_pidm
+           AND NOT EXISTS (SELECT *
+                             FROM shrtckn gn
+                            WHERE NVL(gn.shrtckn_repeat_course_ind,'I') = 'I'
+                              AND gn.shrtckn_crse_numb = s.ssbsect_crse_numb
+                              AND gn.shrtckn_subj_code = s.ssbsect_subj_code
+                              AND gn.shrtckn_pidm = v.smrswav_pidm)
+           AND NOT EXISTS (SELECT *
+                             FROM stvrsts v, sfrstcr r
+                            WHERE v.stvrsts_incl_sect_enrl = 'Y'
+                              AND v.stvrsts_code = r.sfrstcr_rsts_code
+                              AND r.sfrstcr_crn = s.ssbsect_crn
+                              AND r.sfrstcr_term_code = s.ssbsect_term_code
+                              AND r.sfrstcr_pidm = v.smrswav_pidm)
+           AND NOT EXISTS (SELECT *
+                             FROM sfrsrpo o
+                            WHERE o.sfrsrpo_rovr_code = 'PREREQ'
+                              AND o.sfrsrpo_crse_numb = s.ssbsect_crse_numb
+                              AND o.sfrsrpo_subj_code = s.ssbsect_subj_code
+                              AND o.sfrsrpo_pidm = v.smrswav_pidm
+                              AND o.sfrsrpo_term_code = s.ssbsect_term_code )
+           AND s.ssbsect_ssts_code = 'A'
+           AND s.ssbsect_crse_numb = '211'
+           AND s.ssbsect_subj_code IN ( 'SOC','PSY')
+           AND s.ssbsect_term_code = term_code_in
+           AND v.smrswav_crse_numb IN ( '104' ,'107')
+           AND v.smrswav_subj_code = 'MAT';
+
+   END;
+   -----------------------------------------------------------------------------------
+   -----------------------------------------------------------------------------------
+   PROCEDURE p_uc_assign_to_closed_regGrp (reg_term_code_in stvterm.stvterm_code%TYPE)
+   IS
+
+         CURSOR one_shot_programs_c IS
+         SELECT DISTINCT x.sgbstdn_pidm pidm,
+                fb.sfbrgrp_rgrp_code
+           FROM sgbstdn x, sfbrgrp fb, sfbwctl bw, sfrwctl w
+          WHERE EXISTS (SELECT *
+                          FROM stvrsts v, sfrstcr r
+                         WHERE ( TRUNC(r.sfrstcr_rsts_date) < TRUNC(SYSDATE)
+                                 OR
+                                 TRUNC(r.sfrstcr_add_date) < TRUNC(SYSDATE) )
+                           AND v.stvrsts_incl_sect_enrl = 'Y'
+                           AND v.stvrsts_code = r.sfrstcr_rsts_code
+                           AND r.sfrstcr_pidm = fb.sfbrgrp_pidm
+                           AND r.sfrstcr_term_code = fb.sfbrgrp_term_code )
+            AND x.sgbstdn_program_1 = 'BS-NUR-ASDN'
+            AND x.sgbstdn_stst_code = 'AS'
+            AND x.sgbstdn_term_code_eff = (SELECT MAX(x2.sgbstdn_term_code_eff)
+                                             FROM sgbstdn x2
+                                            WHERE x2.sgbstdn_pidm = fb.sfbrgrp_pidm
+                                              AND x2.sgbstdn_term_code_eff <= fb.sfbrgrp_term_code)
+            AND x.sgbstdn_pidm = fb.sfbrgrp_pidm
+            AND fb.sfbrgrp_rgrp_code IN ( 'CAMPUS_OS','CAMPUS_OFT','CAMPUS_OFM')
+            AND fb.sfbrgrp_rgrp_code = bw.sfbwctl_rgrp_code
+            AND fb.sfbrgrp_term_code = bw.sfbwctl_term_code
+            AND bw.sfbwctl_priority = w.sfrwctl_priority
+            AND bw.sfbwctl_term_code = w.sfrwctl_term_code
+            AND w.sfrwctl_term_code = reg_term_code_in;
+
+   BEGIN
+
+       FOR idx IN one_shot_programs_c
+       LOOP
+           sykolrg.p_uc_insertIntoRegGroup(reg_term_code_in, 'ASDNCLOSED', idx.pidm);
+       END LOOP;
+       COMMIT;
+
+   END;
+   ----------------------------------------------------------------------------------------------------
+   ----------------------------------------------------------------------------------------------------
+
+   PROCEDURE p_uc_asdn_override (reg_term_code_in stvterm.stvterm_code%TYPE)
+   IS
+
+       -- 201510 Continue prereq overrides for students that are accepted pending their
+       --        final official transcripts.  Often students are just finishing the prereqs
+       --        and it takes a bit of time for all the transfer articulation pieces to be put
+       --        in place.  Admissions allows students to register using non-official transcripts
+       --        and grade mailers
+       --        Per discussion with Jessica Nelson, the AP decision code will be removed
+       --        once all documentation has been received, however, transfer articulations
+       --        may not be in place for awhile so issue the overrides prior to deposit pay
+       -- 201310 Dale Scalis-Smith and Cathy Brownell along with the ASDN Committee
+       -- have authorized prerequisite overrides for the first cohort.
+       -- The timing of pre-req completion, transcript receipt, and recording in Banner
+       -- is such that the prereq courses may not be recroded in Banner at the time of
+       -- Orientation when the students will be registering for the first time.  In order
+       -- to assist with the student experience, override the pre-reqs
+       -- They will be tracked and monitored using the admissions checklist items and if not
+       -- complete by start of term, the students will be dropped.
+
+   BEGIN
+
+         -- Insert a prereq override for NUR courses required in first term
+         INSERT INTO sfrsrpo
+         ( sfrsrpo_term_code, sfrsrpo_pidm, sfrsrpo_rovr_code, sfrsrpo_subj_code, sfrsrpo_crse_numb,
+           sfrsrpo_activity_date, sfrsrpo_seq_numb, sfrsrpo_crn, sfrsrpo_user )
+         SELECT s.ssbsect_term_code, a.saradap_pidm, 'PREREQ', s.ssbsect_subj_code, s.ssbsect_crse_numb,
+                TRUNC(SYSDATE), NULL, NULL, 'DMORISE'
+           FROM ssbsect s, spriden i, stvapdc v, sarappd d, saradap a
+          WHERE NOT EXISTS (SELECT *
+                              FROM sfrsrpo o
+                             WHERE o.sfrsrpo_rovr_code = 'PREREQ'
+                               AND o.sfrsrpo_crse_numb = s.ssbsect_crse_numb
+                               AND o.sfrsrpo_subj_code = s.ssbsect_subj_code
+                               AND o.sfrsrpo_pidm = a.saradap_pidm
+                               AND o.sfrsrpo_term_code = a.saradap_term_code_entry  )
+           AND s.ssbsect_crse_numb IN ('311','321','326','332','346')
+           AND s.ssbsect_subj_code = 'NUR'
+           AND s.ssbsect_camp_code = a.saradap_camp_code
+           AND s.ssbsect_term_code = reg_term_code_in
+           AND i.spriden_change_ind IS NULL
+           AND i.spriden_pidm = a.saradap_pidm
+           AND EXISTS ( SELECT d2.*
+                          FROM sarappd d2
+                         WHERE d2.sarappd_apdc_code = 'AP'
+                           AND d2.sarappd_appl_no = a.saradap_appl_no
+                           AND d2.sarappd_term_code_entry = a.saradap_term_code_entry
+                           AND d2.sarappd_pidm = a.saradap_pidm )
+           AND v.stvapdc_reject_ind IS NULL
+           AND v.stvapdc_appl_inact IS NULL
+           AND v.stvapdc_code = d.sarappd_apdc_code
+           AND d.sarappd_seq_no = ( SELECT MAX(d1.sarappd_seq_no)
+                                      FROM sarappd d1
+                                     WHERE d1.sarappd_appl_no = a.saradap_appl_no
+                                       AND d1.sarappd_term_code_entry = a.saradap_term_code_entry
+                                       AND d1.sarappd_pidm = a.saradap_pidm )
+           AND d.sarappd_appl_no = a.saradap_appl_no
+           AND d.sarappd_term_code_entry = a.saradap_term_code_entry
+           AND d.sarappd_pidm = a.saradap_pidm
+           AND a.saradap_program_1 = 'BS-NUR-ASDN'
+           AND a.saradap_appl_no = (SELECT MAX(ap8.saradap_appl_no)
+                                      FROM saradap ap8
+                                     WHERE ap8.saradap_term_code_entry = a.saradap_term_code_entry
+                                       AND ap8.saradap_pidm = a.saradap_pidm)
+           AND a.saradap_term_code_entry = reg_term_code_in
+         GROUP BY s.ssbsect_term_code, a.saradap_pidm, s.ssbsect_subj_code, s.ssbsect_crse_numb;
+
+
+       COMMIT;
+   END;
+   ----------------------------------------------------------------------------------------------------------------------
+   ----------------------------------------------------------------------------------------------------------------------
+   PROCEDURE set_SOATERM_flags (term_code_in stvterm.stvterm_code%TYPE)
+   IS
+   BEGIN
+
+       -- Default Incomplete Grade Extension Date on the part-of-term screen
+       UPDATE sobptrm m
+          SET m.sobptrm_incomplete_ext_date = m.sobptrm_end_date + 42
+        WHERE m.sobptrm_term_code = term_code_in;
+       COMMIT;
+
+       -- Set flags in SOATERM
+       UPDATE sobterm m
+          SET m.sobterm_reg_allowed = 'Y',
+              m.sobterm_dupl_severity = 'F',
+              m.sobterm_link_severity = 'F',
+              m.sobterm_time_severity = 'F',
+              m.sobterm_capc_severity = 'F',
+              m.sobterm_levl_severity = 'F',
+              m.sobterm_coll_severity = 'F',
+              m.sobterm_majr_severity = 'F',
+              m.sobterm_clas_severity = 'F',
+              m.sobterm_appr_severity = 'F',
+              m.sobterm_maxh_severity =  'F',
+              m.sobterm_hold_severity = 'F',
+              m.sobterm_rept_severity = 'W',
+              m.sobterm_rpth_severity = 'W',
+              m.sobterm_camp_severity = 'F',
+              m.sobterm_print_bill_vr = 'N',
+              m.sobterm_incl_attmpt_hrs_ind = 'Y',
+              m.sobterm_cred_web_upd_ind = 'Y',
+              m.sobterm_gmod_web_upd_ind = 'N',
+              m.sobterm_levl_web_upd_ind = 'N',
+              m.sobterm_closect_web_disp_ind = 'Y',
+              m.sobterm_mailer_web_ind = 'Y',
+              m.sobterm_schd_web_search_ind = 'Y',
+              m.sobterm_camp_web_search_ind = 'Y',
+              m.sobterm_sess_web_search_ind = 'N',
+              m.sobterm_instr_web_search_ind = 'Y',
+              m.sobterm_facschd_web_disp_ind = 'Y',
+              m.sobterm_claslst_web_disp_ind = 'Y',
+              m.sobterm_overapp_web_upd_ind = 'Y',
+              m.sobterm_add_drp_web_upd_ind = 'Y',
+              m.sobterm_degree_severity = 'N',
+              m.sobterm_program_severity = 'F',
+              m.sobterm_grade_detail_web_ind = 'N',
+              m.sobterm_midterm_web_ind = 'Y',
+              m.sobterm_profile_send_ind = 'N',
+              m.sobterm_tiv_date_source = 'P',
+              m.sobterm_attr_web_search_ind = 'Y',
+              m.sobterm_levl_web_search_ind = 'Y',
+              m.sobterm_insm_web_search_ind = 'Y',
+              m.sobterm_ls_title_webs_disp_ind = 'Y',
+              m.sobterm_ls_desc_webs_disp_ind = 'Y',
+              m.sobterm_duration_web_srch_ind = 'N',
+              m.sobterm_levl_web_catl_srch_ind = 'Y',
+              m.sobterm_styp_web_catl_srch_ind = 'Y',
+              m.sobterm_coll_web_catl_srch_ind = 'Y',
+              m.sobterm_div_web_catl_srch_ind = 'N',
+              m.sobterm_dept_web_catl_srch_ind = 'N',
+              m.sobterm_prog_att_webc_srch_ind = 'Y',
+              m.sobterm_lc_title_webc_disp_ind = 'Y',
+              m.sobterm_lc_desc_webc_disp_ind = 'Y',
+              m.sobterm_assess_swap_ind = 'N',
+              m.sobterm_assess_rev_nrf_ind = 'N',
+              m.sobterm_assess_reg_grace_ind = 'N',
+              m.sobterm_data_origin = 'sykolrg',
+              m.sobterm_user_id = 'DMORISE',
+              m.sobterm_minh_severity = 'N',
+              m.sobterm_dept_severity = 'N',
+              m.sobterm_atts_severity = 'N',
+              m.sobterm_chrt_severity = 'N',
+              m.sobterm_mexc_severity = 'F',
+              m.sobterm_study_path_ind = 'N',
+              m.sobterm_future_repeat_ind = 'N',
+              m.sobterm_sp_web_upd_ind = 'N'
+        WHERE m.sobterm_term_code = term_code_in;
+
+        IF SUBSTR(term_code_in,5,2) IN ('10','80') THEN
+
+           UPDATE sobterm m
+              SET m.sobterm_refund_ind = 'Y'
+            WHERE m.sobterm_term_code = term_code_in;
+
+         END IF;
+
+   END;
+   ----------------------------------------------------------------------------------------------------
+   ----------------------------------------------------------------------------------------------------
+   PROCEDURE p_uc_ins_RNBS_attr (term_code_in stvterm.stvterm_code%TYPE)
+   IS
+
+      CURSOR rnbsStudents_c IS
+      SELECT x.sgbstdn_pidm pidm,
+             x.sgbstdn_camp_code camp_code,
+             x.sgbstdn_styp_code styp_code,
+             x.sgbstdn_program_1 program_1,
+             x.sgbstdn_term_code_admit
+       FROM sgbstdn x
+      WHERE NOT EXISTS (SELECT *
+                          FROM sgrsatt sa
+                         WHERE sa.sgrsatt_atts_code = 'RNBS'
+                           AND sa.sgrsatt_term_code_eff = ( SELECT MAX(a2.sgrsatt_term_code_eff)
+                                                              FROM sgrsatt a2
+                                                             WHERE a2.sgrsatt_term_code_eff <= term_code_in
+                                                               AND a2.sgrsatt_pidm = sa.sgrsatt_pidm)
+                           AND sa.sgrsatt_pidm = x.sgbstdn_pidm)
+        AND x.sgbstdn_program_1 IN ( 'BS-NUR-RN-OL','BSN-NUR-RNOL' )
+        AND x.sgbstdn_stst_code = 'AS'
+        AND x.sgbstdn_term_code_eff = (SELECT MAX(x2.sgbstdn_term_code_eff)
+                                         FROM sgbstdn x2
+                                        WHERE x2.sgbstdn_pidm = x.sgbstdn_pidm
+                                          AND x2.sgbstdn_term_code_eff <= term_code_in);
+   BEGIN
+
+
+      FOR idx IN rnbsStudents_c
+      LOOP
+         uc_ins_sgrsatt(idx.pidm,term_code_in,'RNBS');
+      END LOOP;
+      COMMIT;
+
+   END;
+   ----------------------------------------------------------------------------------------------------
+   ----------------------------------------------------------------------------------------------------
+   PROCEDURE p_uc_ins_ASDN_attr (term_code_in stvterm.stvterm_code%TYPE)
+   IS
+
+      feeAssess_attribute stvatts.stvatts_code%TYPE;
+
+      CURSOR asdnStudents_c IS
+      SELECT x.sgbstdn_pidm pidm,
+             x.sgbstdn_camp_code camp_code,
+             x.sgbstdn_styp_code styp_code,
+             x.sgbstdn_program_1 program_1,
+             x.sgbstdn_term_code_admit
+       FROM sgbstdn x
+      WHERE NOT EXISTS (SELECT *
+                          FROM sgrsatt sa
+                         WHERE sa.sgrsatt_atts_code = 'ASDN'
+                           AND sa.sgrsatt_term_code_eff = ( SELECT MAX(a2.sgrsatt_term_code_eff)
+                                                              FROM sgrsatt a2
+                                                             WHERE a2.sgrsatt_term_code_eff <= term_code_in
+                                                               AND a2.sgrsatt_pidm = sa.sgrsatt_pidm)
+                           AND sa.sgrsatt_pidm = x.sgbstdn_pidm)
+        AND x.sgbstdn_program_1 = 'BS-NUR-ASDN'
+        AND x.sgbstdn_stst_code = 'AS'
+        AND x.sgbstdn_term_code_eff = (SELECT MAX(x2.sgbstdn_term_code_eff)
+                                         FROM sgbstdn x2
+                                        WHERE x2.sgbstdn_pidm = x.sgbstdn_pidm
+                                          AND x2.sgbstdn_term_code_eff <= term_code_in);
+
+         CURSOR feeAssessAttr_c IS
+         SELECT i.spriden_id,
+                g.sgbstdn_pidm pidm,
+                g.sgbstdn_term_code_admit admitTerm
+           FROM spriden i, sgbstdn g
+          WHERE i.spriden_change_ind IS NULL
+            AND i.spriden_pidm = g.sgbstdn_pidm
+            AND (  ( g.sgbstdn_term_code_admit < '201680' AND
+                     f_uc_getStudentAttribute (g.sgbstdn_pidm,'AB15',term_code_in) IS NULL )
+                   OR
+                   ( g.sgbstdn_term_code_admit BETWEEN '201680' AND '201710' AND
+                     f_uc_getStudentAttribute (g.sgbstdn_pidm,'AB16',term_code_in) IS NULL )
+                   OR
+                   ( g.sgbstdn_term_code_admit  BETWEEN '201750' AND '201810' AND
+                     f_uc_getStudentAttribute (g.sgbstdn_pidm,'AB17',term_code_in) IS NULL )
+                   OR
+                   ( g.sgbstdn_term_code_admit BETWEEN '201850' AND '201910' AND
+                     f_uc_getStudentAttribute (g.sgbstdn_pidm,'AB18',term_code_in) IS NULL )
+                    OR
+                   ( g.sgbstdn_term_code_admit BETWEEN '201950' AND '202010' AND
+                     f_uc_getStudentAttribute (g.sgbstdn_pidm,'AB19',term_code_in) IS NULL )
+                    OR
+                    ( g.sgbstdn_term_code_admit BETWEEN '202050' AND '202110' AND
+                     f_uc_getStudentAttribute (g.sgbstdn_pidm,'AB20',term_code_in) IS NULL )
+                    OR
+                    ( g.sgbstdn_term_code_admit BETWEEN '202150' AND '202210' AND
+                     f_uc_getStudentAttribute (g.sgbstdn_pidm,'AB21',term_code_in) IS NULL )
+                    OR
+                    ( g.sgbstdn_term_code_admit BETWEEN '202250' AND '202310' AND
+                     f_uc_getStudentAttribute (g.sgbstdn_pidm,'AB22',term_code_in) IS NULL )
+                )
+            AND g.sgbstdn_program_1 = 'BS-NUR-ASDN'
+            AND g.sgbstdn_stst_code = 'AS'
+            AND g.sgbstdn_term_code_eff = (SELECT MAX(g2.sgbstdn_term_code_eff)
+                                             FROM sgbstdn g2
+                                            WHERE g2.sgbstdn_pidm = g.sgbstdn_pidm
+                                              AND g2.sgbstdn_term_code_eff <= term_code_in);
+
+   BEGIN
+
+
+      FOR idx IN asdnStudents_c
+      LOOP
+         uc_ins_sgrsatt(idx.pidm,term_code_in,'ASDN');
+      END LOOP;
+      COMMIT;
+
+      -- Starting with 201680 ASDN students have different tuition rates depending upon their admit term
+      -- We are controlling which rate using attribute codes
+      FOR idx2 IN feeAssessAttr_c
+      LOOP
+         IF idx2.admitTerm < '201680' THEN
+            feeAssess_attribute := 'AB15';
+         ELSIF idx2.admitTerm BETWEEN '201680' AND '201710' THEN
+            feeAssess_attribute := 'AB16';
+         ELSIF idx2.admitTerm BETWEEN '201750' AND '201810' THEN
+            feeAssess_attribute := 'AB17';
+         ELSIF idx2.admitTerm BETWEEN '201850' AND '201910' THEN
+            feeAssess_attribute := 'AB18';
+         ELSIF idx2.admitTerm BETWEEN '201950' AND '202010' THEN
+            feeAssess_attribute := 'AB19';
+         ELSIF idx2.admitTerm BETWEEN '202050' AND '202110' THEN
+            feeAssess_attribute := 'AB20';
+         ELSIF idx2.admitTerm BETWEEN '202150' AND '202210' THEN
+            feeAssess_attribute := 'AB21';
+         ELSIF idx2.admitTerm BETWEEN '202250' AND '202310' THEN
+            feeAssess_attribute := 'AB22';
+         END IF;
+
+         uc_ins_sgrsatt(idx2.pidm,term_code_in, feeAssess_attribute);
+      END LOOP;
+      COMMIT;
+   END;
+   ------------------------------------------------------------------------------------------------------------------
+   ------------------------------------------------------------------------------------------------------------------
+   PROCEDURE p_uc_changePIN_newFreshman(term_code_in stvterm.stvterm_code%TYPE)
+   IS
+
+       summer_admit_term  stvterm.stvterm_code%TYPE;
+       newRegPin          sprapin.sprapin_pin%TYPE;
+       stuEmail           goremal.goremal_email_address%TYPE;
+       emailBody          VARCHAR2(2000);
+       communicType       syrtemd.syrtemd_communication_type%TYPE := 'FY_CHANGE_REG_PIN';
+
+       -- This cursor pulls the appropriate text of the email to be sent to each student
+       CURSOR targeted_email_c IS
+       SELECT c.syrtemc_subject_line||' '||m.stvterm_desc subjectLine,
+              c.syrtemc_sender sender,
+              REPLACE(c.syrtemc_text, ':TERMDESC',m.stvterm_desc ) emailText,
+              d.syrtemd_days_between_emails days_between_emails
+         FROM syrtemc c, syrtemd d, stvterm m
+        WHERE c.syrtemc_code = d.syrtemd_temc_code
+          AND c.syrtemc_communication_type = d.syrtemd_communication_type
+          AND TRUNC(SYSDATE) BETWEEN TRUNC(d.syrtemd_send_begin_date) AND TRUNC(d.syrtemd_send_end_date)
+          AND d.syrtemd_camp_code = 'U'
+          AND d.syrtemd_status_code = 'A'
+          AND d.syrtemd_communication_type = communicType
+          AND d.syrtemd_term_code = m.stvterm_code
+          AND m.stvterm_code = term_code_in;
+
+        temRec targeted_email_c%ROWTYPE;
+
+
+       -- This cursor pulls any new U campus freshman that are registered full-time
+       -- where the registration pin is still the term code
+       CURSOR new_u_fy_c IS
+       SELECT i.spriden_id,
+              i.spriden_first_name||' '||i.spriden_last_name stuName,
+              i.spriden_pidm pidm
+              --ap.saradap_admt_code,
+              --    g.sgbstdn_camp_code camp_code,
+              --    g.sgbstdn_styp_code styp_code,
+              --    g.sgbstdn_program_1 program_1,
+              -- ( SELECT rg.sfbrgrp_rgrp_code
+              --               FROM sfbrgrp rg
+              --               WHERE rg.sfbrgrp_pidm = ap.saradap_pidm
+              --                AND rg.sfbrgrp_term_code = '201580' ),
+              --   (SELECT SUM(r.sfrstcr_credit_hr)
+              --              FROM stvrsts v, sfrstcr r
+              --             WHERE v.stvrsts_incl_sect_enrl = 'Y'
+              --               AND v.stvrsts_code = r.sfrstcr_rsts_code
+              --               AND r.sfrstcr_pidm = bu.spbpers_pidm
+              --               AND r.sfrstcr_term_code = '201580' ) registerHrs
+              --   (SELECT SUM(r.sfrstcr_credit_hr)
+              --             FROM stvrsts v, sfrstcr r
+              --            WHERE v.stvrsts_incl_sect_enrl = 'Y'
+              --              AND v.stvrsts_code = r.sfrstcr_rsts_code
+              --              AND r.sfrstcr_pidm = bu.spbpers_pidm
+              --              AND r.sfrstcr_term_code = '201510' )
+          FROM spriden i, sprapin a, sgbstdn g, spbpers bu, stvapdc va, sarappd pp, saradap ap
+         WHERE EXISTS (SELECT SUM(r.sfrstcr_credit_hr)
+                         FROM stvrsts v, sfrstcr r
+                        WHERE v.stvrsts_incl_sect_enrl = 'Y'
+                          AND v.stvrsts_code = r.sfrstcr_rsts_code
+                          AND r.sfrstcr_pidm = bu.spbpers_pidm
+                          AND r.sfrstcr_term_code = term_code_in
+                       HAVING SUM(r.sfrstcr_credit_hr) >= 12 )
+           AND i.spriden_change_ind IS NULL
+           AND i.spriden_pidm = a.sprapin_pidm
+           AND a.sprapin_pidm = g.sgbstdn_pidm
+           AND a.sprapin_pin = term_code_in
+           AND a.sprapin_term_code = term_code_in
+           AND g.sgbstdn_styp_code = '1'
+           AND g.sgbstdn_camp_code = 'U'
+           AND g.sgbstdn_stst_code = 'AS'
+           AND g.sgbstdn_term_code_eff = (SELECT MAX(g2.sgbstdn_term_code_eff)
+                                            FROM sgbstdn g2
+                                           WHERE g2.sgbstdn_pidm = bu.spbpers_pidm
+                                             AND g2.sgbstdn_term_code_eff <= term_code_in)
+           AND g.sgbstdn_pidm = bu.spbpers_pidm
+           AND bu.spbpers_dead_date IS NULL
+           AND NVL(bu.spbpers_dead_ind,'N') = 'N'
+           AND bu.spbpers_pidm = pp.sarappd_pidm
+           AND va.stvapdc_stdn_acc_ind = 'Y'
+           AND va.stvapdc_code = pp.sarappd_apdc_code
+           AND pp.sarappd_seq_no = (SELECT MAX(pp2.sarappd_seq_no)
+                                      FROM sarappd pp2
+                                     WHERE pp2.sarappd_appl_no = pp.sarappd_appl_no
+                                       AND pp2.sarappd_term_code_entry = pp.sarappd_term_code_entry
+                                       AND pp2.sarappd_pidm = pp.sarappd_pidm)
+           AND pp.sarappd_appl_no = ap.saradap_appl_no
+           AND pp.sarappd_term_code_entry = ap.saradap_term_code_entry
+           AND pp.sarappd_pidm = ap.saradap_pidm
+           AND ap.saradap_styp_code = '1'
+           AND ap.saradap_camp_code = 'U'
+           AND ap.saradap_levl_code = 'UG'
+           AND ap.saradap_appl_no = (SELECT MAX(ap2.saradap_appl_no)
+                                       FROM saradap ap2
+                                      WHERE ap2.saradap_pidm = ap.saradap_pidm)
+           AND ap.saradap_term_code_entry IN ( summer_admit_term,term_code_in);
+
+          stuRec new_u_fy_c %ROWTYPE;
+
+
+   BEGIN
+
+       -- The original pin is the term code.  The last character will be changed from a 0 to a 1
+       -- to create the new pin
+       -- Example 201580 --> 201581
+       newRegPin  := SUBSTR(term_code_in, 1,5)||'1';
+
+       IF term_code_in LIKE '%80'  THEN
+           -- If processing for Fall registration, we also want to look at the new admits for
+           -- that summer.
+           summer_admit_term := SUBSTR(term_code_in, 1,4)||'50';
+       ELSE
+           summer_admit_term := 'x';
+       END IF;
+
+       -- Get the text of the email to send out
+       -- This should only execute for terms when the targeted email criteris is set up
+       -- As of 6/2015, that is only for the Fall 2015 term
+       OPEN targeted_email_c;
+       LOOP
+          FETCH targeted_email_c INTO temRec;
+          EXIT WHEN targeted_email_c%NOTFOUND;
+
+          -- Now get the new freshman admits that have registered full time
+          OPEN new_u_fy_c;
+          LOOP
+             FETCH new_u_fy_c INTO stuRec;
+             EXIT WHEN new_u_fy_c%NOTFOUND;
+
+             -- Change the students registration pin
+             UPDATE sprapin a
+                SET a.sprapin_pin = newRegPin,
+                    a.sprapin_activity_date = SYSDATE
+              WHERE a.sprapin_term_code = term_code_in
+                AND a.sprapin_pidm = stuRec.pidm;
+              COMMIT;
+
+              -- If we have text for the email for this term send the student a
+              -- notice that their pin was changed
+              IF targeted_email_c%FOUND THEN
+
+                  stuEmail := ldap_manager.get_user_email(stuRec.pidm);
+                  IF stuEmail NOT LIKE 'ERR-%' THEN
+
+                     emailBody   := 'Dear '|| stuRec.stuName||',<BR><BR>'||temRec.emailText;
+
+                     utl_mail.send(recipients =>stuEmail,
+                                   sender =>temRec.sender,
+                                   subject => temRec.subjectLine,
+                                   message =>emailBody,
+                                   mime_type => 'text/html');
+
+                     -- Record it in the log table
+                     INSERT INTO syrlogs
+                     ( syrlogs_term_code, syrlogs_pidm, syrlogs_email_address, syrlogs_communication_type,
+                       syrlogs_text, syrlogs_activity_date )
+                     VALUES
+                     (  term_code_in, stuRec.pidm, stuEmail, communicType, emailBody, SYSDATE );
+
+                     COMMIT;
+                END IF;
+             END IF; -- end if targeted email found
+
+          END LOOP;
+          CLOSE new_u_fy_c;
+       END LOOP;
+       CLOSE targeted_email_c;
+   END;
+   ---------------------------------------------------------------------------------------------------------------------
+   ---------------------------------------------------------------------------------------------------------------------
+   PROCEDURE p_uc_upd_sfbetrm_min_hrs(term_code_in stvterm.stvterm_code%TYPE)
+   IS
+
+       -- This procedure is used to set the minimum registration hours when a student is registered for
+       -- non-full term classes.  Goal: Set minimum hours equal to registered classes.  Reason: If student attempts to
+       -- drop a part-of-term class after having completed a prior part-of-term class, then the dropping may impact
+       -- financial aid and title IV payments.  Setting min hours will block student from dropping which in theory
+       -- will force student to have conversation with SFS.
+
+       lastDropAddDate DATE;
+       newMinHrs       sfbetrm.sfbetrm_min_hrs%TYPE;
+
+       -- Cursor pulls students that are registered for a non-16 week section that has ended and they are
+       -- registered for another non-16 week section that starts after the first section ended
+       -- (and they are not registered for any 16 week classes) but not registered for the whole term
+       CURSOR setMinHrs_c IS
+       SELECT DISTINCT e.sfbetrm_term_code term_code, e.sfbetrm_pidm pidm, NVL(e.sfbetrm_min_hrs,0) currMinHrs
+         FROM sgbstdn n, sfbetrm e, stvrsts v, sfrstcr r, ssbsect s, stvterm m
+        WHERE NOT EXISTS (SELECT *
+                            FROM ssbsect s4, stvrsts v4, sfrstcr r4
+                           WHERE s4.ssbsect_ptrm_weeks >= 15
+                             AND s4.ssbsect_crn = r4.sfrstcr_crn
+                             AND s4.ssbsect_term_code = r4.sfrstcr_term_code
+                             AND v4.stvrsts_incl_sect_enrl = 'Y'
+                             AND v4.stvrsts_code = r4.sfrstcr_rsts_code
+                             AND r4.sfrstcr_pidm = e.sfbetrm_pidm
+                             AND r4.sfrstcr_term_code = e.sfbetrm_term_code )
+          AND EXISTS (SELECT *
+                        FROM ssbsect s3, stvrsts v3, sfrstcr r3
+                       WHERE TRUNC(s3.ssbsect_ptrm_start_date) > TRUNC(s.ssbsect_ptrm_end_date)
+                         AND s3.ssbsect_ptrm_weeks < 15
+                         AND s3.ssbsect_crn = r3.sfrstcr_crn
+                         AND s3.ssbsect_term_code = r3.sfrstcr_term_code
+                         AND v3.stvrsts_incl_sect_enrl = 'Y'
+                         AND v3.stvrsts_code = r3.sfrstcr_rsts_code
+                         AND r3.sfrstcr_pidm = e.sfbetrm_pidm
+                         AND r3.sfrstcr_term_code = e.sfbetrm_term_code )
+         AND n.sgbstdn_levl_code IN ('UG','GR')
+         AND n.sgbstdn_term_code_eff = (SELECT MAX(n2.sgbstdn_term_code_eff)
+                                          FROM sgbstdn n2
+                                         WHERE n2.sgbstdn_term_code_eff <= e.sfbetrm_term_code
+                                           AND n2.sgbstdn_pidm = e.sfbetrm_pidm)
+         AND n.sgbstdn_pidm = e.sfbetrm_pidm
+         AND e.sfbetrm_pidm = r.sfrstcr_pidm
+         AND e.sfbetrm_term_code = r.sfrstcr_term_code
+         AND v.stvrsts_incl_sect_enrl = 'Y'
+         AND v.stvrsts_code = r.sfrstcr_rsts_code
+         AND r.sfrstcr_crn = s.ssbsect_crn
+         AND r.sfrstcr_term_code = s.ssbsect_term_code
+         AND TRUNC(s.ssbsect_ptrm_end_date) < TRUNC(SYSDATE)
+         AND s.ssbsect_ptrm_weeks <  15
+         AND s.ssbsect_term_code = m.stvterm_code
+         AND TRUNC(SYSDATE) BETWEEN TRUNC(m.stvterm_start_date) AND TRUNC(m.stvterm_end_date)
+         AND m.stvterm_code = term_code_in;
+
+   BEGIN
+
+       UPDATE sobterm m
+          SET m.sobterm_minh_severity = 'F'
+        WHERE NVL(m.sobterm_minh_severity,'N') = 'N'
+          AND m.sobterm_term_code = term_code_in;
+
+       COMMIT;
+
+       FOR idx IN setMinHrs_c
+       LOOP
+
+          -- Get the parts-of-term this student is registered for and find the
+          -- latest date the WD starts.  Substract 1 and that is the last day to drop add
+
+          SELECT MAX(c.sfrrsts_start_date -1)
+            INTO lastDropAddDate
+            FROM stvrsts v, sfrrsts c
+           WHERE v.stvrsts_auto_grade = 'WD'
+             AND v.stvrsts_code = c.sfrrsts_rsts_code
+             AND c.sfrrsts_ptrm_code IN ( SELECT r2.sfrstcr_ptrm_code
+                                            FROM stvrsts v2, sfrstcr r2, ssbsect s2
+                                           WHERE v2.stvrsts_incl_sect_enrl = 'Y'
+                                             AND v2.stvrsts_code = r2.sfrstcr_rsts_code
+                                             AND r2.sfrstcr_pidm = idx.pidm
+                                             AND r2.sfrstcr_crn = s2.ssbsect_crn
+                                             AND r2.sfrstcr_term_code = s2.ssbsect_term_code
+                                             AND TRUNC(s2.ssbsect_ptrm_end_date) > TRUNC(SYSDATE)
+                                             AND s2.ssbsect_term_code = idx.term_code )
+             AND c.sfrrsts_term_code = idx.term_code;
+
+          -- If we are still in a drop add period for a course that has not ended
+          -- set the minimum registration hours
+          IF TRUNC(SYSDATE) <= lastDropAddDate  THEN
+
+             SELECT SUM(r4.sfrstcr_bill_hr)
+               INTO newMinHrs
+               FROM stvrsts v4, sfrstcr r4
+              WHERE v4.stvrsts_incl_assess = 'Y'
+                AND v4.stvrsts_code = r4.sfrstcr_rsts_code
+                AND r4.sfrstcr_pidm = idx.pidm
+                AND r4.sfrstcr_term_code = idx.term_code;
+
+             IF newMinHrs != idx.currMinHrs THEN
+
+                UPDATE sfbetrm m
+                   SET m.sfbetrm_activity_date = SYSDATE,
+                       m.sfbetrm_user_id = 'SYKOLRG',
+                       m.sfbetrm_min_hrs = newMinHrs
+                 WHERE m.sfbetrm_pidm = idx.pidm
+                   AND m.sfbetrm_term_code = idx.term_code;
+             END IF;
+          END IF;
+
+       END LOOP;
+
+    END;
+    -----------------------------------------------------------------------------------------------------------------------------------------
+    -----------------------------------------------------------------------------------------------------------------------------------------
+    PROCEDURE p_uc_ins_INTL_attr (term_code_in stvterm.stvterm_code%TYPE)
+    IS
+
+        -- Add the INTL - International attribute on international ground students
+        -- They will qualify for a different health insurance plan which is billed by attribute
+        CURSOR intl_c IS
+        SELECT i.spriden_id, g.sgbstdn_pidm pidm,
+                g.sgbstdn_camp_code camp_code,
+                g.sgbstdn_styp_code styp_code,
+                g.sgbstdn_program_1 program_1,
+                g.sgbstdn_admt_code,
+                b.spbpers_citz_code
+           FROM spbpers b, spriden i, sgbstdn g
+          WHERE NOT EXISTS (SELECT *
+                              FROM sgrsatt sa
+                             WHERE sa.sgrsatt_atts_code = 'INTL'
+                               AND sa.sgrsatt_term_code_eff = ( SELECT MAX(a2.sgrsatt_term_code_eff)
+                                                                  FROM sgrsatt a2
+                                                                  WHERE a2.sgrsatt_term_code_eff <= term_code_in
+                                                                    AND a2.sgrsatt_pidm = sa.sgrsatt_pidm)
+                               AND sa.sgrsatt_pidm = b.spbpers_pidm)
+            AND NVL(b.spbpers_citz_code,'x') NOT IN ('PR','Y')
+            AND b.spbpers_pidm = i.spriden_pidm
+            AND i.spriden_change_ind IS NULL
+            AND i.spriden_pidm = g.sgbstdn_pidm
+            AND EXISTS (SELECT v.gorvisa_pidm
+                            FROM gorvisa v
+                           WHERE v.gorvisa_vtyp_code != 'Z'
+                             AND v.gorvisa_seq_no = (SELECT MAX(v2.gorvisa_seq_no)
+                                                       FROM gorvisa v2
+                                                      WHERE v2.gorvisa_pidm = v.gorvisa_pidm)
+                             AND v.gorvisa_pidm = g.sgbstdn_pidm )
+            AND g.sgbstdn_camp_code IN ('U','G')
+            AND g.sgbstdn_levl_code IN ('UG','GR')
+            AND g.sgbstdn_stst_code = 'AS'
+            AND g.sgbstdn_term_code_eff = (SELECT MAX(g2.sgbstdn_term_code_eff)
+                                             FROM sgbstdn g2
+                                            WHERE g2.sgbstdn_pidm = g.sgbstdn_pidm
+                                              AND g2.sgbstdn_term_code_eff <= term_code_in );
+
+    BEGIN
+
+        IF term_code_in >= '201680' THEN
+
+           FOR idx IN intl_c
+           LOOP
+
+               uc_ins_sgrsatt(idx.pidm,term_code_in,'INTL');
+
+           END LOOP;
+           COMMIT;
+        END IF;
+
+    END;
+    -----------------------------------------------------------------------------------------------------------------------------------------
+    -----------------------------------------------------------------------------------------------------------------------------------------
+    PROCEDURE p_uc_ins_FRES_attr (term_code_in stvterm.stvterm_code%TYPE)
+    IS
+
+       -- This procedure adds the FRES student attribute to any distance student admitted after 201210.
+       -- These students will be assessed a residency fee when they register for courses that have residencies
+       -- The fee assessment rules are attached to the applicable sections in SSADETL
+
+       --  05/02/2016 Moved logic to stored package versus stand alone procedure
+       --  04/28/2014 Add logic to check to see if student was authorized absence for this term.  If they were
+       --             authorized then they will not be charged the fee
+       --  03/17/2014 Put evaluation of admit term back in since removal caused assessment on student that should not be assess
+       --  02/20/2014 Condition to evaluate admit term removed.   AND x.sgbstdn_term_code_admit >= '201210'
+       CURSOR newDistanceStudents_c IS
+       SELECT x.sgbstdn_pidm pidm,
+              x.sgbstdn_camp_code camp_code,
+              x.sgbstdn_styp_code styp_code,
+              x.sgbstdn_program_1 program_1,
+              x.sgbstdn_term_code_admit
+         FROM sgbstdn x
+        WHERE NOT EXISTS (SELECT *
+                            FROM sfrstcr r, ssbsect t
+                           WHERE r.sfrstcr_grde_code = 'AUTHAB'
+                             AND r.sfrstcr_crn = t.ssbsect_crn
+                             AND r.sfrstcr_term_code = t.ssbsect_term_code
+                             AND t.ssbsect_crse_numb = '995'
+                             AND t.ssbsect_term_code = term_code_in )
+          AND NOT EXISTS (SELECT *
+                            FROM sgrsatt sa
+                           WHERE sa.sgrsatt_atts_code = 'FRES'
+                             AND sa.sgrsatt_term_code_eff = ( SELECT MAX(a2.sgrsatt_term_code_eff)
+                                                                FROM sgrsatt a2
+                                                               WHERE a2.sgrsatt_term_code_eff <= term_code_in
+                                                                 AND a2.sgrsatt_pidm = sa.sgrsatt_pidm)
+                             AND sa.sgrsatt_pidm = x.sgbstdn_pidm)
+          AND x.sgbstdn_term_code_admit >= '201210'
+          AND x.sgbstdn_camp_code = 'DG'
+          AND x.sgbstdn_levl_code = 'GR'
+          AND x.sgbstdn_stst_code = 'AS'
+          AND x.sgbstdn_term_code_eff = (SELECT MAX(x2.sgbstdn_term_code_eff)
+                                           FROM sgbstdn x2
+                                          WHERE x2.sgbstdn_pidm = x.sgbstdn_pidm
+                                            AND x2.sgbstdn_term_code_eff <= term_code_in);
+    BEGIN
+
+
+      FOR idx IN newDistanceStudents_c
+      LOOP
+
+         uc_ins_sgrsatt(idx.pidm,term_code_in,'FRES');
+
+      END LOOP;
+      COMMIT;
+
+    END;
+    -------------------------------------------------------------------------------------------------------------------------
+    -------------------------------------------------------------------------------------------------------------------------
+    FUNCTION f_uc_assign_reg_group (pidm_in sgbstdn.sgbstdn_pidm%TYPE, reg_term_code_in stvterm.stvterm_code%TYPE)
+          RETURN VARCHAR2
+    IS
+       -- This is the term they must be registered in now
+       priorRegTerm       stvterm.stvterm_code%TYPE;
+       priorSportsTerm    stvterm.stvterm_code%TYPE;
+       summerAdmitTerm    stvterm.stvterm_code%TYPE;
+       regGroup           sfbrgrp.sfbrgrp_rgrp_code%TYPE := NULL;
+       groupCount         NUMBER(4);
+       LS_Count           NUMBER(4);
+       HEOP_TRIO_Count    NUMBER(4);
+       HONR_Count         NUMBER(4);
+       UCEMS_Count        NUMBER(4);
+       RA_COUNT           NUMBER(4);
+
+       CURSOR regStu_c IS
+       SELECT s.sgbstdn_pidm pidm,
+              s.sgbstdn_levl_code levlCode,
+              s.sgbstdn_camp_code campCode,
+              s.sgbstdn_styp_code stypCode,
+              s.sgbstdn_program_1 program_1,
+              s.sgbstdn_majr_code_conc_1 concentration_1,
+              s.sgbstdn_majr_code_conc_1_2 concentration_1_2,
+              s.sgbstdn_majr_code_conc_2 concentration_2,
+              s.sgbstdn_term_code_admit admitTerm,
+              NVL(f_uc_getInProgressCreditHrs(s.sgbstdn_pidm,priorRegTerm ),0) inProgressHrs,
+              NVL(f_uc_getcumearnedhrs(s.sgbstdn_pidm, s.sgbstdn_levl_code),0) cumHrs
+         FROM spbpers b, sgbstdn s
+        WHERE b.spbpers_dead_ind IS NULL
+          AND b.spbpers_pidm = s.sgbstdn_pidm
+          AND s.sgbstdn_levl_code IN (  'UG','GR' )
+          AND s.sgbstdn_stst_code = 'AS'
+          AND s.sgbstdn_term_code_eff = (SELECT MAX(s2.sgbstdn_term_code_eff)
+                                           FROM sgbstdn s2
+                                          WHERE s2.sgbstdn_term_code_eff <= reg_term_code_in
+                                            AND s2.sgbstdn_pidm = s.sgbstdn_pidm)
+          AND s.sgbstdn_pidm = pidm_in;
+
+
+   BEGIN
+
+      SELECT MAX(m.stvterm_code)
+        INTO priorRegTerm
+        FROM stvterm m
+       WHERE SUBSTR(m.stvterm_code,5,2) IN ('80','10')
+         AND m.stvterm_code < reg_term_code_in;
+
+      IF SUBSTR(reg_term_code_in,5,2) = '80' THEN
+
+         SELECT MAX(m.stvterm_code)
+           INTO summerAdmitTerm
+           FROM stvterm m
+          WHERE SUBSTR(m.stvterm_code,5,2) = '50'
+            AND m.stvterm_code < reg_term_code_in;
+      ELSE
+
+           summerAdmitTerm := 'x';
+      END IF;
+
+      IF SUBSTR(reg_term_code_in,5,2) IN ('10', '80' ) THEN
+
+         SELECT MAX(m.stvterm_code)
+           INTO priorSportsTerm
+           FROM stvterm m
+          WHERE SUBSTR(m.stvterm_code,5,2) = SUBSTR(reg_term_code_in,5,2)
+            AND SUBSTR(m.stvterm_code,5,2) IN ('80','10')
+            AND m.stvterm_code < reg_term_code_in;
+
+       ELSIF SUBSTR(reg_term_code_in,5,2) = '50' THEN
+
+          SELECT MAX(m.stvterm_code)
+           INTO priorSportsTerm
+           FROM stvterm m
+          WHERE SUBSTR(m.stvterm_code,5,2) = '80'
+            AND m.stvterm_code < reg_term_code_in;
+        END IF;
+
+
+      FOR idx IN regStu_c
+      LOOP
+
+         -- ABSN students registered manually
+         IF idx.program_1 NOT IN ( 'BS-NUR-ASDN','NON-MAT-ABSN','NON-MAT-ABOR','NON-MAT-ABPR','BSN-NUR-HY','BS-HSC-HY') THEN
+
+            -- Distance Students
+            IF idx.campCode IN ('D','DG','CP','FSR','P','PG','M') THEN
+
+               regGroup := 'CAMPUS_'||idx.campCode;
+
+            -- Continuing G Campus Students
+            ELSIF idx.campCode = 'G' AND idx.admitTerm NOT IN (summerAdmitTerm, reg_term_code_in) THEN
+
+               regGroup := 'CAMPUS_'||idx.campCode;
+
+            -- Seniors
+            ELSIF (idx.inProgressHrs + idx.cumHrs) >= 87 THEN
+
+               -- Put 200 seniors in each group
+               SELECT COUNT(*)
+                 INTO groupCount
+                 FROM sfbrgrp p
+                WHERE p.sfbrgrp_rgrp_code = 'SR_1'
+                  AND p.sfbrgrp_term_code = reg_term_code_in;
+
+               IF groupCount <= 200 THEN
+
+                  regGroup := 'SR_1';
+
+               ELSE
+
+                  SELECT COUNT(*)
+                    INTO groupCount
+                    FROM sfbrgrp p
+                   WHERE p.sfbrgrp_rgrp_code = 'SR_2'
+                     AND p.sfbrgrp_term_code = reg_term_code_in;
+
+                  IF groupCount <= 200 THEN
+                     regGroup := 'SR_2';
+                  ELSE
+                     regGroup := 'SR_3';
+                  END IF;
+               END IF;
+            ELSE
+
+               -- Learning Services
+               SELECT COUNT(*)
+                 INTO LS_Count
+                 FROM sgrdisa d
+                WHERE d.sgrdisa_disa_code = 'PR'
+                  AND d.sgrdisa_term_code IN ( reg_term_code_in, priorRegTerm )
+                  AND d.sgrdisa_pidm = idx.pidm ;
+
+               -- HEOP or TRIO
+               SELECT COUNT(*)
+                 INTO HEOP_TRIO_Count
+                 FROM sgrsatt a
+                WHERE a.sgrsatt_atts_code IN ( 'A6','TRIO','PASS')
+                  AND a.sgrsatt_term_code_eff = (SELECT MAX(a2.sgrsatt_term_code_eff)
+                                                   FROM sgrsatt a2
+                                                  WHERE a2.sgrsatt_term_code_eff <= reg_term_code_in
+                                                    AND a2.sgrsatt_pidm = idx.pidm )
+                  AND a.sgrsatt_pidm = idx.pidm;
+
+               -- HONORs
+               SELECT COUNT(*)
+                 INTO HONR_Count
+                 FROM sgrsatt a
+                WHERE a.sgrsatt_atts_code = 'HONR'
+                  AND a.sgrsatt_term_code_eff = (SELECT MAX(a2.sgrsatt_term_code_eff)
+                                                   FROM sgrsatt a2
+                                                  WHERE a2.sgrsatt_term_code_eff <= reg_term_code_in
+                                                    AND a2.sgrsatt_pidm = idx.pidm )
+                  AND a.sgrsatt_pidm = idx.pidm;
+
+
+               IF LS_Count > 0 THEN
+
+                   regGroup := 'LS';
+
+               ELSIF HEOP_TRIO_Count > 0 THEN
+
+                   regGroup := 'HEOP_TRIO';
+
+               ELSIF HONR_Count > 0 THEN
+
+                   regGroup := 'HONORS';
+
+               ELSIF idx.concentration_1 IN ('JD01','JD02','JD04','JD07','JD10','JDA9','JDB8','JDL3','JDL6','JDN5') OR
+                     idx.concentration_1_2 IN ('JD01','JD02','JD04','JD07','JD10','JDA9','JDB8','JDL3','JDL6','JDN5') OR
+                     idx.concentration_2 IN ('JD01','JD02','JD04','JD07','JD10','JDA9','JDB8','JDL3','JDL6','JDN5') THEN
+
+                   regGroup := 'PREMEDJNT';
+
+               ELSE
+                      -- Spring Athletes
+                      -- Varsity Swimming and Diving, Varsity Waterpolo, Varsity Golf, Varsity Lacrosse,
+                      -- Varsity Softball, Varsity Baseball, Varsity Ice Hockey, Varsity Tennis,
+                      -- Varsity Basketball, Varsity Track & Field
+
+                       -- Fall Athletes
+                       -- Varsity Football, Varsity Soccer, Varsity Field Hockey, Varsity Ice Hockey,Varsity Basketball,
+                       -- Varsity Golf, Varsity Tennis, Varsity Volleyball, Varsity Track & Field,
+                       -- Varsity Cross Country, Varsity Swimming and Diving
+
+                       -- Spring Registration                          Fall Registration
+                       -- SVBA Baseball                                SVFB Football
+                       -- SVWP Waterpolo                               SVFH Field Hockey
+                       -- SVLX Lacrosse                                SVXC Cross Country
+                       -- SVSF Softball                                SVSO Soccer
+                       --                                              SVVB Volleyball
+                       -- SVIC Ice Hockey                              SVIC Ice Hockey
+                       -- SVBK Basketball                              SVBK Basketball
+                       -- SVSW Swimming and Diving                     SVSW Swimming and Diving
+                       -- SVTF Track and Field                         SVTF Track and Field
+                       -- SVTN Tennis                                  SVTN Tennis
+                       -- SVGF Golf                                    SVGF Golf
+
+                       SELECT COUNT(*)
+                         INTO groupCount
+                         FROM sgrsprt s
+                        WHERE s.sgrsprt_spst_code = 'AC'
+                          AND (s.sgrsprt_term_code = reg_term_code_in
+                               OR
+                               ( s.sgrsprt_term_code = priorRegTerm AND
+                                 s.sgrsprt_actc_code IN ('SVIC','SVBK','SVSW','SVTF','SVTN','SVGF' ) )
+                                 OR
+                               ( SUBSTR(reg_term_code_in ,5,2) = '50' AND
+                                 s.sgrsprt_term_code = priorSportsTerm AND
+                                 s.sgrsprt_actc_code IN ('SVFB','SVFH', 'SVXC', 'SVSO', 'SVVB','SVGF' ) )
+                                 OR
+                               ( SUBSTR(reg_term_code_in ,5,2) = '80' AND
+                                 s.sgrsprt_term_code = priorSportsTerm AND
+                                 s.sgrsprt_actc_code IN ('SVFB','SVFH', 'SVXC', 'SVSO', 'SVVB','SVGF' ) )
+                                 OR
+                               ( SUBSTR(reg_term_code_in ,5,2) = '10' AND
+                                 s.sgrsprt_term_code = priorSportsTerm AND
+                                 s.sgrsprt_actc_code IN ('SVBA','SVWP', 'SVLX', 'SVSF' ) )
+                              )
+                          AND s.sgrsprt_pidm = idx.pidm ;
+
+                        IF groupCount > 0 THEN
+
+                           regGroup := 'ATH_1';
+
+                        ELSE
+
+                           -- Utica Emergency Medical Services
+                           SELECT COUNT(*)
+                             INTO UCEMS_Count
+                             FROM sgrsact a
+                            WHERE a.sgrsact_actc_code = 'UCEMS'
+                              AND a.sgrsact_term_code = ( SELECT MAX (a2.sgrsact_term_code)
+                                                            FROM sgrsact a2
+                                                           WHERE a2.sgrsact_actc_code = 'UCEMS' )
+                              AND a.sgrsact_pidm = idx.pidm;
+
+                           -- Residence Hall Assistaant
+                           SELECT COUNT(*)
+                             INTO RA_Count
+                             FROM syrevfi v
+                            WHERE syrevfi_resident_assistant IS NOT NULL
+                              AND syrevfi_term_code = (SELECT MAX(syrevfi_term_code)
+                                                         FROM syrevfi v2
+                                                        WHERE syrevfi_resident_assistant IS NOT NULL )
+                              AND v.syrevfi_pidm = idx.pidm;
+
+                           IF UCEMS_Count > 0 THEN
+
+                              -- Utica Emergency Medical Services
+                              regGroup := 'UCEMS';
+
+                           ELSIF RA_Count > 0 THEN
+
+                              regGroup := 'RESASSIST';
+
+                           ELSIF (idx.inProgressHrs + idx.cumHrs) BETWEEN 57 AND 86.99 THEN
+
+                              -- Junior
+                              SELECT COUNT(*)
+                                INTO groupCount
+                                FROM sfbrgrp p
+                               WHERE p.sfbrgrp_rgrp_code = 'JR_1'
+                                 AND p.sfbrgrp_term_code = reg_term_code_in;
+
+                               IF groupCount <= 200 THEN
+                                  regGroup := 'JR_1';
+
+                               ELSE
+
+                                  SELECT COUNT(*)
+                                    INTO groupCount
+                                    FROM sfbrgrp p
+                                   WHERE p.sfbrgrp_rgrp_code = 'JR_2'
+                                     AND p.sfbrgrp_term_code = reg_term_code_in;
+
+                                 IF groupCount <= 200 THEN
+                                    regGroup := 'JR_2';
+                                 ELSE
+                                    regGroup := 'JR_3';
+                                 END IF;
+                               END IF; -- End of Juniors
+
+                           -- Sophomores
+                           ELSIF (idx.inProgressHrs + idx.cumHrs) BETWEEN 27 AND 56.99 THEN
+
+                              SELECT COUNT(*)
+                                INTO groupCount
+                                FROM sfbrgrp p
+                               WHERE p.sfbrgrp_rgrp_code = 'SO_1'
+                                 AND p.sfbrgrp_term_code = reg_term_code_in;
+
+                              IF groupCount <= 200 THEN
+
+                                 regGroup := 'SO_1';
+
+                              ELSE
+                                 SELECT COUNT(*)
+                                   INTO groupCount
+                                   FROM sfbrgrp p
+                                  WHERE p.sfbrgrp_rgrp_code = 'SO_2'
+                                   AND p.sfbrgrp_term_code = reg_term_code_in;
+
+                                 IF groupCount <= 200 THEN
+                                    regGroup := 'SO_2';
+                                 ELSE
+                                    regGroup := 'SO_3';
+                                 END IF;
+                              END IF; -- End Sophomores
+
+                           -- Freshman
+                           ELSIF (idx.inProgressHrs + idx.cumHrs) BETWEEN 0 AND 26.99 THEN
+
+                              SELECT COUNT(*)
+                                INTO groupCount
+                                FROM sfbrgrp p
+                               WHERE p.sfbrgrp_rgrp_code = 'FY_1'
+                                 AND p.sfbrgrp_term_code = reg_term_code_in;
+
+                               IF groupCount <= 200 THEN
+
+                                   regGroup := 'FY_1';
+                                ELSE
+
+                                   SELECT COUNT(*)
+                                     INTO groupCount
+                                     FROM sfbrgrp p
+                                    WHERE p.sfbrgrp_rgrp_code = 'FY_2'
+                                      AND p.sfbrgrp_term_code = reg_term_code_in;
+
+                                   IF groupCount <= 200 THEN
+                                      regGroup := 'FY_2';
+                                   ELSE
+                                      regGroup := 'FY_3';
+                                   END IF;
+                                END IF; -- End freshman
+
+                            -- New G Campus Student
+                           ELSIF idx.campCode = 'G' AND idx.admitTerm IN (summerAdmitTerm, reg_term_code_in) THEN
+
+                                  regGroup := 'CAMP_'||idx.campCode||'_NEW';
+
+                           ELSE
+                                    regGroup := NULL;
+                           END IF; -- End ucems
+                  END IF; -- END Athletes
+               END IF; -- End priority groups
+            END IF; -- End campus codes and seniors
+     END IF; -- End not ABSN
+   END LOOP;
+   RETURN regGroup;
+   END;
+   ----------------------------------------------------------------------------------------------------
+   PROCEDURE p_uc_populate_4yr_guarantee_table (term_code_in stvterm.stvterm_code%TYPE)
+   IS
+
+   BEGIN
+
+      IF term_code_in >= '202180' AND SUBSTR(term_code_in,5,2) IN ('10','50','80') THEN
+
+         INSERT INTO syrfyrg
+        ( syrfyrg_pidm, syrfyrg_admit_term)
+         SELECT ap.saradap_pidm pidm,
+                ap.saradap_term_code_entry
+           FROM spbpers bu, stvapdc va, sarappd pp, saradap ap
+          WHERE bu.spbpers_dead_date IS NULL
+            AND NVL(bu.spbpers_dead_ind,'N') = 'N'
+            AND bu.spbpers_pidm = pp.sarappd_pidm
+            AND NOT EXISTS (SELECT *
+                              FROM syrfyrg f
+                             WHERE f.syrfyrg_admit_term = ap.saradap_term_code_entry
+                               AND f.syrfyrg_pidm = ap.saradap_pidm)
+            AND va.stvapdc_stdn_acc_ind = 'Y'
+            AND va.stvapdc_code = pp.sarappd_apdc_code
+            AND pp.sarappd_seq_no = (SELECT MAX(pp2.sarappd_seq_no)
+                                       FROM sarappd pp2
+                                      WHERE pp2.sarappd_appl_no = pp.sarappd_appl_no
+                                        AND pp2.sarappd_term_code_entry = pp.sarappd_term_code_entry
+                                        AND pp2.sarappd_pidm = pp.sarappd_pidm)
+            AND pp.sarappd_appl_no = ap.saradap_appl_no
+            AND pp.sarappd_term_code_entry = ap.saradap_term_code_entry
+            AND pp.sarappd_pidm = ap.saradap_pidm
+            AND ap.saradap_full_part_ind = 'F'
+            AND ap.saradap_styp_code = '1'
+            AND ap.saradap_camp_code IN ('U','D')
+            AND ap.saradap_appl_no = (SELECT MAX(ap2.saradap_appl_no)
+                                        FROM saradap ap2
+                                       WHERE ap2.saradap_pidm = ap.saradap_pidm)
+            AND ap.saradap_term_code_entry = term_code_in;
+
+
+       END IF;
+   END;
+END;
+

@@ -1,0 +1,67 @@
+PACKAGE sykolrg IS
+
+   -- On-Line Registration Package
+   -- This package provides procedures that support on-line registration
+
+   PROCEDURE p_uc_olrg_process_control(term_code_in stvterm.stvterm_code%TYPE);
+
+   PROCEDURE p_uc_ins_honr_overrides (term_code_in stvterm.stvterm_code%TYPE);
+
+   PROCEDURE p_uc_ins_fixed_alt_pin (pidm_in sgbstdn.sgbstdn_pidm%TYPE,
+                                     term_code_in stvterm.stvterm_code%TYPE,
+                                     alt_pin_in sprapin.sprapin_pin%TYPE);
+
+
+   PROCEDURE p_uc_ins_random_alt_pin (pidm_in sgbstdn.sgbstdn_pidm%TYPE,
+                                      term_code_in stvterm.stvterm_code%TYPE);
+
+
+   PROCEDURE p_uc_upd_gobtpac (pidm_in sgbstdn.sgbstdn_pidm%TYPE,
+                               term_code_in stvterm.stvterm_code%TYPE,
+                               alt_pin_in sprapin.sprapin_pin%TYPE);
+
+   PROCEDURE p_uc_assign_newAdmits_regGrp (reg_term_code_in stvterm.stvterm_code%TYPE);
+
+   PROCEDURE p_uc_upd_sfbetrm_max_hrs(reg_term_code_in stvterm.stvterm_code%TYPE);
+
+   PROCEDURE p_uc_deleteAllFromRegGroup(term_code_in    sfbrgrp.sfbrgrp_term_code%TYPE,
+                                        regGroupCode_in sfbrgrp.sfbrgrp_rgrp_code%TYPE);
+
+   PROCEDURE p_uc_insertIntoRegGroup (term_code_in    sfbrgrp.sfbrgrp_term_code%TYPE,
+                                      regGroupCode_in sfbrgrp.sfbrgrp_rgrp_code%TYPE,
+                                      pidm_in         sfbrgrp.sfbrgrp_pidm%TYPE);
+
+   PROCEDURE p_uc_priority_reg_stud (reg_term_code_in sfbrgrp.sfbrgrp_term_code%TYPE );
+
+   PROCEDURE p_uc_ins_dupl_overrides (term_code_in stvterm.stvterm_code%TYPE);
+
+   PROCEDURE p_uc_insOverrides_from_waivers (term_code_in stvterm.stvterm_code%TYPE);
+
+ --  PROCEDURE p_uc_assign_noPRIOR_regGrp (reg_term_code_in stvterm.stvterm_code%TYPE);
+
+ --  PROCEDURE p_uc_assign_add_drop_regGrp (reg_term_code_in stvterm.stvterm_code%TYPE);
+
+   PROCEDURE p_uc_assign_to_closed_regGrp (reg_term_code_in stvterm.stvterm_code%TYPE);
+
+   PROCEDURE p_uc_asdn_override (reg_term_code_in stvterm.stvterm_code%TYPE);
+
+   PROCEDURE set_SOATERM_flags (term_code_in stvterm.stvterm_code%TYPE);
+
+   PROCEDURE p_uc_ins_RNBS_attr (term_code_in stvterm.stvterm_code%TYPE);
+
+   PROCEDURE p_uc_ins_ASDN_attr (term_code_in stvterm.stvterm_code%TYPE);
+
+   PROCEDURE p_uc_changePIN_newFreshman(term_code_in stvterm.stvterm_code%TYPE);
+
+   PROCEDURE p_uc_upd_sfbetrm_min_hrs(term_code_in stvterm.stvterm_code%TYPE);
+
+   PROCEDURE p_uc_ins_INTL_attr (term_code_in stvterm.stvterm_code%TYPE);
+
+   PROCEDURE p_uc_ins_FRES_attr (term_code_in stvterm.stvterm_code%TYPE);
+
+   FUNCTION f_uc_assign_reg_group (pidm_in sgbstdn.sgbstdn_pidm%TYPE, reg_term_code_in stvterm.stvterm_code%TYPE)
+          RETURN VARCHAR2;
+
+   PROCEDURE p_uc_populate_4yr_guarantee_table (term_code_in stvterm.stvterm_code%TYPE);
+END;
+
